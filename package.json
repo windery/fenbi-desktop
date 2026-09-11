@@ -13,5 +13,8 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
+  },
+  "engines": {
+    "node": ">=22.13"
   }
 }
