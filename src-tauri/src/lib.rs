@@ -127,15 +127,22 @@ fn is_known_logged_in(app: tauri::AppHandle) -> bool {
     read_login_flag(&app).unwrap_or(false)
 }
 
-/// 是否在练习/报告区内：此时不应该弹登录框打断做题。
+/// 是否在练习/考试流程内：此时不应该弹登录框打断做题，也不应该跳转。
+///
+/// 注意真实的练习页在 `spa.fenbi.com/ti/exam/exercise/<id>`，
+/// **不在 `/tiku` 之下**。最初只判断 `/tiku/...` 导致这个保护完全失效。
 fn inside_practice(win: &tauri::WebviewWindow) -> bool {
+    const PREFIXES: [&str; 4] = [
+        "/ti/", // 真实练习/考试页
+        "/tiku/exercise",
+        "/tiku/guide/realTest",
+        "/tiku/report",
+    ];
     let Ok(url) = win.url() else {
         return false;
     };
     let path = url.path();
-    path.starts_with("/tiku/exercise")
-        || path.starts_with("/tiku/guide/realTest")
-        || path.starts_with("/tiku/report")
+    PREFIXES.iter().any(|p| path.starts_with(p))
 }
 
 /// 通知页面「已登出」，让页面弹登录框。
@@ -213,11 +220,17 @@ fn spawn_login_watch(win: tauri::WebviewWindow, load_gen: std::sync::Arc<std::sy
                     );
                 }
                 match (has, recorded) {
-                    // 检测到已登录：记录纠正为 true，必要时进目录页
+                    // 检测到已登录：记录纠正为 true。
+                    // 记录原本不是 true 时也要通知页面——启动路径可能已经按
+                    // 过期的 false 排好了一个弹框，得让它取消；
+                    // 若站点把我们带到了别处，也顺便回目录页。
                     (true, r) => {
                         logged_in = Some(true);
                         write_login_flag(&win.app_handle().clone(), true);
                         if r != Some(true) {
+                            if debug_enabled() {
+                                println!("[fenbi-wrapper] record corrected -> notify page");
+                            }
                             let _ = win.eval(
                                 "window.__fenbiLoginSucceeded && window.__fenbiLoginSucceeded();",
                             );

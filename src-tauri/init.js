@@ -35,9 +35,6 @@
   /* 切到扫码后等二维码渲染出来的时间 */
   var QR_RENDER_DELAY_MS = 900;
 
-  /* 登录成功后进目录页前的小停顿，避免和站点自己的收尾流程打架。 */
-  var GO_AFTER_LOGIN_DELAY_MS = 600;
-
   /* 登录按钮还没渲染出来时的重试参数。这是「启动 0 等待」的唯一落地：
    * 不预先等，发现按钮没出现就快速重试，按钮一出现立刻弹。 */
   var LOGIN_BTN_RETRY_MS = 250;
@@ -66,27 +63,57 @@
    * ------------------------------------------------------------------ */
   var UI_TWEAKS = true;
 
-  /* 整块移除（页脚本来就不参与顶栏布局，display:none 没问题） */
+  /* 整块移除。
+   *
+   * 目录页的卡片用**白名单**思路维护：只列出要干掉的，其余全部保留。
+   * 不要反过来写"保留 xxx"——站点常加新的推广位，黑名单会漏、白名单会误伤。
+   *
+   * 目录容器 `.fb-ng-tiku-catalog` 的直接子元素（实测）：
+   *   UL.info-block                三张卡片：快速练习 / 历年试卷 / 智能组卷  -> 保留
+   *   APP-AWARD-EXAM-BANNER        「粉笔模考奖学金争霸赛」横幅 180px       -> 移除
+   *   SECTION.mokao-block          「模考大赛」                             -> 保留
+   *
+   * 父容器高度是被内容撑开的（实测隐藏横幅后每层都恰好 -196px，
+   * 即 180 高 + 16 上下 margin），所以不需要手工降高，也不会留空白。 */
   var HIDE_SELECTORS = [
-    "#fenbi-web-footer",
-    ".fb-footer-wrapper",
+    "app-award-exam-banner", // 「粉笔模考奖学金争霸赛」活动横幅
   ];
 
-  /* 不可见但保留占位（用于顶栏这类参与 flex 布局的元素） */
-  var INVISIBLE_SELECTORS = [
-    "nav.fb-web-nav", // 首页 / 课程 / 题库 / 关于粉笔 / 下载客户端 / 投资者关系
+  /* A 类：不可见且尺寸归零 —— 用于顶栏这类需要"让出宽度"的元素。
+   * visibility 不脱离 flex 流，所以 flex-grow:1 仍然生效，
+   * 右侧头像依然被顶到最右。 */
+  var COLLAPSE_SELECTORS = [
+    "nav.fb-web-nav", // 顶栏 tab：首页 / 课程 / 题库 / 关于粉笔 / 下载客户端 / 投资者关系
   ];
+
+  /* B 类：不可见但**保留原始尺寸** —— 用于"清空内容、留下留白"的场景。
+   * 千万不要给这类加 width/height:0，否则留白就没了。 */
+  var HIDE_CONTENT_SELECTORS = [
+    ".fb-footer-wrapper .public-wrapper", // 页脚上半：关于我们 / 法律声明 / 二维码
+    ".fb-footer-wrapper .divider", // 页脚分割线
+    ".fb-footer-wrapper .info-wrapper", // 页脚下半：客服热线 / 备案号
+  ];
+
+  /* D 类：压掉一部分高度。
+   * 页脚外框原本 321px（实测），整块留白太厚，压到一半。
+   *
+   * 只能改 fb-web-footer：`.fb-footer-wrapper` 的高度是它撑出来的，
+   * 给 wrapper 设 height 无效（实测 321 → 321 不动）。 */
+  var SHRINK_HEIGHT_CSS =
+    "fb-web-footer {\n" +
+    "  background: transparent !important;\n" +
+    "  height: 50% !important;\n" +
+    "  overflow: hidden !important;\n" +
+    "}";
 
   function buildCleanCss() {
     var css = "";
     if (HIDE_SELECTORS.length) {
       css += HIDE_SELECTORS.join(",\n") + " { display: none !important; }\n";
     }
-    if (INVISIBLE_SELECTORS.length) {
-      // 宽度归零 + 不可见，但都保留在 flex 流里（visibility 不脱离流，
-      // 所以 nav 的 flex-grow:1 仍然生效，把右侧头像顶到最右）
+    if (COLLAPSE_SELECTORS.length) {
       css +=
-        INVISIBLE_SELECTORS.join(",\n") +
+        COLLAPSE_SELECTORS.join(",\n") +
         " {\n" +
         "  visibility: hidden !important;\n" +
         "  pointer-events: none !important;\n" +
@@ -97,6 +124,16 @@
         "  overflow: hidden !important;\n" +
         "}\n";
     }
+    if (HIDE_CONTENT_SELECTORS.length) {
+      css +=
+        HIDE_CONTENT_SELECTORS.join(",\n") +
+        " {\n" +
+        "  visibility: hidden !important;\n" +
+        "  pointer-events: none !important;\n" +
+        "}\n";
+    }
+    // 压高度 + 去底色（页脚自身是深色底，不去掉的话留白是黑的）
+    css += SHRINK_HEIGHT_CSS + "\n";
     return css;
   }
 
@@ -238,10 +275,42 @@
     }, QR_RENDER_DELAY_MS);
   }
 
-  /* 进目录页。目录页会自己恢复上次选的分类，所以不需要我们关心分类。 */
+  /* 是否在练习/考试流程内：此时**绝不能**跳转，否则会把用户从做题页踹走。
+   *
+   * ⚠️ 这里必须用"黑名单"思路（明确哪些是练习区）而不是"只放行 /tiku"。
+   * 踩过的坑：最初只识别 /tiku/exercise 等，结果真实的练习页在
+   *   spa.fenbi.com/ti/exam/exercise/<id>
+   * ——不在 /tiku 下，于是保护形同虚设：用户一点「去练习」，
+   * 新页面加载后脚本发现不在目录页，立刻把他踹回目录页，
+   * 表现就是"点了没反应"。 */
+  var PRACTICE_PREFIXES = [
+    "/ti/", // 真实练习/考试页：/ti/exam/exercise/<id>、/ti/... 等
+    "/tiku/exercise",
+    "/tiku/guide/realTest",
+    "/tiku/report",
+  ];
+
+  function insidePractice() {
+    var p = location.pathname;
+    for (var i = 0; i < PRACTICE_PREFIXES.length; i++) {
+      if (p.indexOf(PRACTICE_PREFIXES[i]) === 0) return true;
+    }
+    return false;
+  }
+
+  /* 进目录页。
+   *
+   * ⚠️ 这里的"已在目标页就返回"不只是省事，它是**防重载循环的必要条件**：
+   * 若在已位于目录页时还 location.replace，页面会重载 → 脚本重跑 →
+   * 又走到这里 → 再次 replace，启动路径直接陷入死循环。 */
   function goToCatalog(reason) {
     if (location.pathname === TARGET_PATH()) {
       log("already at catalog", reason);
+      return;
+    }
+    // 用户在练习页就绝不打扰
+    if (insidePractice()) {
+      log("inside practice, never redirect", reason + " | " + location.pathname);
       return;
     }
     log("go to catalog", reason + " | from=" + location.pathname);
@@ -258,23 +327,77 @@
     openLoginOnce("logged-out:" + why);
   };
 
-  /* Rust 侧检测到登录成功时推来。 */
+  /* 权威判定说"已登录"时置位。用来取消启动路径上那个可能已经排队的弹框。 */
+  var verifiedLoggedIn = false;
+
+  /* Rust 侧检测到登录成功时推来。
+   *
+   * 站点在登录后会自己重定向到试卷列表（实测 catalog → /spa/tiku/ →
+   * /spa/tiku/guide/home/{courseSet}/{prefix}），所以这里打个一次性标记，
+   * 让下一个页面（无论站点把我们带到哪）自己跳回目录页。
+   *
+   * 为什么不在当前页面直接 location.replace：站点紧接着还会重定向，
+   * 我们会被覆盖掉。等它跳完、页面重新加载后再纠正，才抢得过。 */
   window.__fenbiLoginSucceeded = function () {
-    log("login succeeded -> go to catalog");
-    setTimeout(function () {
-      goToCatalog("login-succeeded");
-    }, GO_AFTER_LOGIN_DELAY_MS);
+    verifiedLoggedIn = true;
+    log("login succeeded -> schedule return to catalog");
+    try {
+      sessionStorage.setItem("fenbi-return-catalog", String(Date.now()));
+    } catch (e) {}
   };
+
+  /* 登录后的一次性纠正：若刚登录完却不在目录页，跳回去。
+   * 标记只用一次，因此不会和"已在目录页就返回"的防循环逻辑冲突。 */
+  var RETURN_WINDOW_MS = 60000;
+  function applyPendingReturn(reason) {
+    var raw = null;
+    try {
+      raw = sessionStorage.getItem("fenbi-return-catalog");
+    } catch (e) {}
+    if (!raw) return false;
+
+    try {
+      sessionStorage.removeItem("fenbi-return-catalog");
+    } catch (e) {}
+
+    var age = Date.now() - parseInt(raw, 10);
+    if (!(age >= 0 && age < RETURN_WINDOW_MS)) {
+      log("pending return expired, ignore", String(age));
+      return false;
+    }
+    if (location.pathname === TARGET_PATH()) {
+      log("pending return: already at catalog", reason);
+      return false;
+    }
+    // 登录后如果用户已经自己进练习页了，别把他拉回目录页
+    if (insidePractice()) {
+      log("pending return skipped: inside practice", location.pathname);
+      return false;
+    }
+
+    log("pending return -> back to catalog from " + location.pathname, reason);
+    location.replace(TARGET_URL);
+    return true;
+  }
 
   installShortcuts();
 
   /* 启动：读一次记录就行动，不等任何 cookie。
    *   已登录 -> 直接进目录页
-   *   未登录 -> 立刻弹登录框
-   */
+   *   未登录 -> 弹登录框
+   *
+   * 但记录可能是过期的，而权威判定要等页面加载完成（约 1.5 秒）才有结果。
+   * 所以这里**不能立刻弹框**——先短延迟一次，让判定有机会先纠正。
+   * 曾因此对一个已登录用户弹出登录框：脚本 0.2 秒就读到过期的 false，
+   * 而判定 1.5 秒才把记录改成 true。 */
+  var initialPromptDelayMs = 800;
+
   function start() {
     log("wrapper active", location.href + " | target=" + TARGET_URL);
     applyUiTweaks();
+
+    // 刚登录完却被站点带去别处 -> 先纠正回来
+    if (applyPendingReturn("start")) return;
 
     var p = invoke("is_known_logged_in");
     if (!p) {
@@ -287,10 +410,16 @@
         if (knownLoggedIn) {
           log("record says logged in -> catalog");
           goToCatalog("known-logged-in");
-        } else {
-          log("record says logged out -> open login modal");
-          openLoginOnce("not-logged-in");
+          return;
         }
+        log("record says logged out, prompt in " + initialPromptDelayMs + "ms");
+        setTimeout(function () {
+          if (verifiedLoggedIn) {
+            log("verify said logged in meanwhile -> skip prompt");
+            return;
+          }
+          openLoginOnce("not-logged-in");
+        }, initialPromptDelayMs);
       },
       function (err) {
         log("is_known_logged_in failed", String(err));
