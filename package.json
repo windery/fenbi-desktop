@@ -1,0 +1,16 @@
+{
+  "name": "fenbi-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "粉笔刷题 macOS 桌面 wrapper",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "bash scripts/dev-run.sh",
+    "build": "mkdir -p dist",
+    "bundle": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

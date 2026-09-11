@@ -1,0 +1,8 @@
+# app 自定义命令的权限声明。
+[[permission]]
+identifier = "allow-wrapper-commands"
+description = "允许注入脚本读取登录记录。"
+commands.allow = [
+    "is_known_logged_in",
+    "debug_request_logout",
+]

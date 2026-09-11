@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "粉笔刷题 wrapper 的能力配置。窗口加载的是外部站点，因此必须用 remote.urls 显式授权粉笔域名，注入脚本才能调用 wrapper 自己的登录检查命令。",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["https://*.fenbi.com", "http://127.0.0.1:8850"]
+  },
+  "permissions": ["core:default", "allow-wrapper-commands"]
+}

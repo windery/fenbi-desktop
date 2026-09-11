@@ -1,0 +1,112 @@
+name: release
+
+# 打 tag 触发，例如：
+#   git tag v0.1.0 && git push origin v0.1.0
+# 会构建 macOS / Linux / Windows 三平台产物并创建 GitHub Release。
+#
+# 也可以去 Actions 页面手动 Run workflow 做一次不带发布标签的构建（用来试错）。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+            label: macOS-ARM64
+          - platform: macos-latest
+            args: "--target x86_64-apple-darwin"
+            label: macOS-x64
+          - platform: ubuntu-22.04
+            args: ""
+            label: Linux-x64
+          - platform: windows-latest
+            args: ""
+            label: Windows-x64
+
+    runs-on: ${{ matrix.platform }}
+    name: ${{ matrix.label }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Linux 系统依赖 ──
+      # Tauri 用的是系统 WebKitGTK，需要这些开发包
+      - name: 安装 Linux 依赖
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # 交叉编译 macOS 双架构需要额外 target
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: 缓存 Rust 构建产物
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      # tauri-action 会执行 pnpm tauri build 并把产物上传到 Release
+      - name: 构建并发布
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "粉笔刷题 ${{ github.ref_name }}"
+          releaseBody: |
+            粉笔题库桌面版。
+
+            ## 安装说明
+
+            **macOS**：拖进「应用程序」。未签名，首次打开需右键 →「打开」，
+            或执行 `xattr -dr com.apple.quarantine /Applications/粉笔刷题.app`
+
+            **Windows**：运行 `.exe` 或 `.msi`。未签名，SmartScreen 提示时点「更多信息」→「仍要运行」。
+
+            **Linux**：`.AppImage` 直接加执行权限运行；`.deb` / `.rpm` 用系统包管理器安装。
+
+            ## 用法
+
+            打开即进题库目录页。未登录会弹登录框，登录一次后长期有效。
+            `Cmd/Ctrl + R` 刷新页面。
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

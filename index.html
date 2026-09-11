@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>粉笔刷题</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #f5f7fb;
+        color: #1f2937;
+        font: 15px/1.7 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+      }
+      .box {
+        max-width: 30rem;
+        padding: 2rem 2.25rem;
+        text-align: center;
+      }
+      h1 {
+        margin: 0 0 0.5rem;
+        font-size: 1.25rem;
+      }
+      p {
+        margin: 0.25rem 0;
+        color: #6b7280;
+      }
+      code {
+        padding: 0.1rem 0.35rem;
+        border-radius: 4px;
+        background: #e8edf7;
+        color: #1d4ed8;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- 仅作离线兜底：正常启动时窗口直接加载粉笔刷题页，不会显示这个页面。 -->
+    <div class="box">
+      <h1>粉笔刷题</h1>
+      <p>这个页面只是离线兜底占位。</p>
+      <p>正常启动时窗口会直接加载粉笔题库。</p>
+      <p>若看到本页，请检查 <code>src-tauri/src/lib.rs</code> 里的 <code>PRACTICE_URL</code>。</p>
+    </div>
+  </body>
+</html>
