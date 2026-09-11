@@ -31,7 +31,12 @@ jobs:
             args: ""
             label: Linux-x64
           - platform: windows-latest
-            args: ""
+            # 只出 NSIS，不出 MSI：WiX v3 的 light.exe 处理非 ASCII 产品名
+            # （粉笔刷题）会失败：
+            #   Running light to produce ...\粉笔刷题_0.1.0_x64_en-US.msi
+            #   failed to run ...\WixTools314\light.exe
+            # NSIS 对 Unicode 支持正常。
+            args: "--bundles nsis"
             label: Windows-x64
 
     runs-on: ${{ matrix.platform }}
@@ -100,7 +105,7 @@ jobs:
             未签名，首次打开需**右键 →「打开」**，或执行：
             `xattr -dr com.apple.quarantine /Applications/粉笔刷题.app`
 
-            **Windows**：下载 `.exe` 或 `.msi` 安装。
+            **Windows**：下载 `.exe` 安装。
             未签名，SmartScreen 提示时点「更多信息」→「仍要运行」。
 
             **Linux**：`.AppImage` 加执行权限直接运行；`.deb` / `.rpm` 用系统包管理器装。

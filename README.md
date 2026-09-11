@@ -27,7 +27,7 @@ macOS / Windows / Linux 都能用。
 
 ### Windows
 
-下载 `.exe`（NSIS 安装包）或 `.msi`，双击安装。
+下载 `.exe`（安装包），双击安装。
 
 未签名，SmartScreen 会提示。点**「更多信息」→「仍要运行」**。
 
