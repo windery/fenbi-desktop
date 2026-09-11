@@ -96,6 +96,11 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "粉笔刷题 ${{ github.ref_name }}"
+          # 资产文件名必须用 ASCII：GitHub 会把资产名里的非 ASCII 字符剥掉，
+          # 「粉笔刷题_0.1.0_aarch64.dmg」会变成「_0.1.0_aarch64.dmg」。
+          # 用 mainBinaryName（tauri.conf.json 里设为 fenbi-desktop）作基名，
+          # 应用本体的显示名仍是「粉笔刷题」，只有下载文件名是 ASCII。
+          releaseAssetNamePattern: "[mainBinaryName]_[version]_[platform]_[arch][setup].[ext]"
           releaseBody: |
             粉笔题库桌面版。三平台产物见下方 Assets。
 
