@@ -29,19 +29,49 @@ CI 里的 apt 依赖列表见 `.github/workflows/release.yml`。
 
 ## 发布
 
-打 tag 即触发 GitHub Actions 构建三平台并创建 Release（草稿状态，需手动发布）：
+### 打 tag 触发
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-也可以去 Actions 页面手动 `Run workflow` 做一次不发布的测试构建。
+GitHub Actions 会并行构建四份产物（`.github/workflows/release.yml`）：
 
-**产物未签名。** macOS 用户首次打开需右键 →「打开」，
-Windows 用户在 SmartScreen 里点「更多信息」→「仍要运行」。
-要启用签名的话，在 workflow 里接上 `APPLE_CERTIFICATE` /
-`WINDOWS_CERTIFICATE` 等 secrets 即可，tauri-action 会自动使用。
+| 平台 | 产物 |
+| --- | --- |
+| macOS ARM64 | `.dmg`、`.app` |
+| macOS x64 | `.dmg`、`.app` |
+| Linux x64 | `.AppImage`、`.deb`、`.rpm` |
+| Windows x64 | `.exe`（NSIS）、`.msi` |
+
+**Release 建出来是 draft 状态**，需要去 Releases 页面点 Publish 才对外可见。
+这是故意的：留一个检查产物的机会。
+
+### 只支持 tag 触发（没有手动入口）
+
+workflow 里刻意没有 `workflow_dispatch`。原因：Release 的 tag 名取自
+`github.ref_name`，从分支手动跑会生成一个以分支名为 tag 的 draft Release，
+是个容易踩的坑。要试构建就在本地跑 `pnpm bundle`。
+
+### 版本号改哪里
+
+`src-tauri/tauri.conf.json` 的 `version`。tag 名与它保持一致（`v0.1.0` ↔ `0.1.0`）。
+
+### 签名
+
+**当前完全未签名**，用户首次打开会被 Gatekeeper / SmartScreen 拦，README 里
+写了绕过步骤。要启用签名的话接上 secrets，tauri-action 会自动使用：
+
+- macOS：`APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、
+  `APPLE_SIGNING_IDENTITY`、`APPLE_ID`、`APPLE_PASSWORD`、`APPLE_TEAM_ID`
+- Windows：`WINDOWS_CERTIFICATE`、`WINDOWS_CERTIFICATE_PASSWORD`
+  （`tauri.conf.json` 里的 `windows.certificateThumbprint` 也要填）
+
+### 跨平台验证的局限
+
+CI 只保证**能构建出产物**，不保证三个平台都跑得起来。macOS 是主要开发与验证
+平台；Windows / Linux 的实际运行需要真机测试。
 
 ---
 

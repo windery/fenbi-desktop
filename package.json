@@ -2,8 +2,9 @@
   "name": "fenbi-desktop",
   "private": true,
   "version": "0.1.0",
-  "description": "粉笔刷题 macOS 桌面 wrapper",
+  "description": "粉笔题库桌面版（macOS / Windows / Linux）",
   "type": "module",
+  "packageManager": "pnpm@11.22.0",
   "scripts": {
     "tauri": "tauri",
     "dev": "bash scripts/dev-run.sh",

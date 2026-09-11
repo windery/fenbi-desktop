@@ -1,15 +1,16 @@
 name: release
 
-# 打 tag 触发，例如：
+# 打 tag 触发发布：
 #   git tag v0.1.0 && git push origin v0.1.0
-# 会构建 macOS / Linux / Windows 三平台产物并创建 GitHub Release。
 #
-# 也可以去 Actions 页面手动 Run workflow 做一次不带发布标签的构建（用来试错）。
+# 会构建 macOS（ARM64 + x64）/ Linux / Windows 并创建 GitHub Release
+# （草稿状态，需要你去 Releases 页面点 Publish）。
+#
+# 注意：Release 的 tag 名取自触发它的 ref，所以**必须用 tag 触发**。
 on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -17,7 +18,7 @@ permissions:
 jobs:
   build:
     strategy:
-      fail-fast: false
+      fail-fast: false # 一个平台失败不影响其他平台出包
       matrix:
         include:
           - platform: macos-latest
@@ -39,15 +40,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── Linux 系统依赖 ──
-      # Tauri 用的是系统 WebKitGTK，需要这些开发包
+      # Tauri 在 Linux 上用的是系统 WebKitGTK，需要这些开发包
       - name: 安装 Linux 依赖
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
             build-essential \
@@ -55,13 +55,12 @@ jobs:
             wget \
             file \
             libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev
+            libssl-dev
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          # 交叉编译 macOS 双架构需要额外 target
+          # macOS 要出 ARM64 + x64 两个包，因此需要两个 target
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: 缓存 Rust 构建产物
@@ -71,8 +70,6 @@ jobs:
 
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - name: 安装 Node
         uses: actions/setup-node@v4
@@ -80,11 +77,11 @@ jobs:
           node-version: 20
           cache: pnpm
 
-      - name: 安装前端依赖
+      - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
-      # tauri-action 会执行 pnpm tauri build 并把产物上传到 Release
-      - name: 构建并发布
+      # tauri-action 会执行 pnpm tauri build，并把各平台产物挂到 Release 上
+      - name: 构建并创建 Release（草稿）
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -92,21 +89,24 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "粉笔刷题 ${{ github.ref_name }}"
           releaseBody: |
-            粉笔题库桌面版。
+            粉笔题库桌面版。三平台产物见下方 Assets。
 
-            ## 安装说明
+            ## 安装
 
-            **macOS**：拖进「应用程序」。未签名，首次打开需右键 →「打开」，
-            或执行 `xattr -dr com.apple.quarantine /Applications/粉笔刷题.app`
+            **macOS**：下载 `.dmg`，拖进「应用程序」。
+            未签名，首次打开需**右键 →「打开」**，或执行：
+            `xattr -dr com.apple.quarantine /Applications/粉笔刷题.app`
 
-            **Windows**：运行 `.exe` 或 `.msi`。未签名，SmartScreen 提示时点「更多信息」→「仍要运行」。
+            **Windows**：下载 `.exe` 或 `.msi` 安装。
+            未签名，SmartScreen 提示时点「更多信息」→「仍要运行」。
 
-            **Linux**：`.AppImage` 直接加执行权限运行；`.deb` / `.rpm` 用系统包管理器安装。
+            **Linux**：`.AppImage` 加执行权限直接运行；`.deb` / `.rpm` 用系统包管理器装。
 
             ## 用法
 
-            打开即进题库目录页。未登录会弹登录框，登录一次后长期有效。
-            `Cmd/Ctrl + R` 刷新页面。
+            打开即进题库目录页，上次选的分类会自动恢复。
+            未登录会弹登录框，登录一次后长期有效。
+            快捷键 `Cmd/Ctrl + R` 刷新页面。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
