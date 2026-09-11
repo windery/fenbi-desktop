@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.fenbi.wrapper",
   "build": {
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
   "app": {

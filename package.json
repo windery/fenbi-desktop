@@ -8,7 +8,7 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "bash scripts/dev-run.sh",
-    "build": "mkdir -p dist",
+    "build": "node -e \"require('fs').mkdirSync('dist',{recursive:true})\"",
     "bundle": "tauri build"
   },
   "devDependencies": {
