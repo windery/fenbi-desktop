@@ -460,6 +460,11 @@ export function createEnv(options = {}) {
       return host ? host.getAttribute("data-fenbi-toolbar") : null;
     },
 
+    /** 展开态右侧那个「收起 ⌃」。 */
+    toolbarCollapse() {
+      return document.querySelectorAll(".fenbi-toolbar-collapse")[0] ?? null;
+    },
+
     /** 收起态那个小箭头。 */
     toolbarHandle() {
       return document.querySelectorAll(".fenbi-toolbar-handle")[0] ?? null;

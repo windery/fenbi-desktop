@@ -182,43 +182,41 @@ test("在 /ti/ 页面也不跳转、不刷新", async () => {
 
 /* ── 工具横栏：注入、收起/展开、状态记忆 ────────────────────── */
 
-test("横栏注入为 body 的首个子节点，默认收起", async () => {
+test("横栏注入为 body 的首个子节点，默认展开", async () => {
   const env = await boot({});
 
   const host = env.toolbar();
   assert.ok(host, "必须注入横栏");
   assert.equal(env.document.body.children[0], host, "横栏要是 body 的第一个子节点（占位，不覆盖站点 header）");
-  assert.equal(env.toolbarState(), "collapsed", "默认收起");
   assert.ok(host.shadowRoot, "内容放在 Shadow DOM 里，站点 CSS 改不到按钮");
-  assert.equal(env.toolbarButton("back"), null, "收起态不渲染动作按钮");
+  assert.equal(env.toolbarState(), "expanded", "默认就是展开的");
+  assert.ok(env.toolbarButton("back"), "默认就能看到动作按钮");
 });
 
-test("点小箭头展开、再点收起，状态写进 localStorage", async () => {
+test("点「收起 ⌃」收起、点小箭头再展开，状态写进 localStorage", async () => {
   const env = await boot({});
 
-  const handle = env.toolbarHandle();
-  assert.ok(handle, "收起态要留一个小箭头");
-
-  handle.click();
-  assert.equal(env.toolbarState(), "expanded");
-  assert.equal(env.localStorage.get("fenbi-wrapper-toolbar"), "expanded");
-  assert.ok(env.toolbarButton("back"), "展开后出现动作按钮");
-
-  handle.click();
+  env.toolbarCollapse().click();
   assert.equal(env.toolbarState(), "collapsed");
   assert.equal(env.localStorage.get("fenbi-wrapper-toolbar"), "collapsed");
+  assert.equal(env.toolbarButton("back"), null, "收起态不渲染动作按钮");
+
+  env.toolbarHandle().click();
+  assert.equal(env.toolbarState(), "expanded");
+  assert.equal(env.localStorage.get("fenbi-wrapper-toolbar"), "expanded");
+  assert.ok(env.toolbarButton("back"));
 });
 
-test("上次展开过：这次页面加载就是展开的", async () => {
-  const env = await boot({ storage: { "fenbi-wrapper-toolbar": "expanded" } });
-  assert.equal(env.toolbarState(), "expanded");
-  assert.ok(env.toolbarButton("back"));
+test("上次收起过：这次页面加载保持收起", async () => {
+  const env = await boot({ storage: { "fenbi-wrapper-toolbar": "collapsed" } });
+  assert.equal(env.toolbarState(), "collapsed");
+  assert.equal(env.toolbarButton("back"), null);
 });
 
 /* ── 横栏的四个按钮 ─────────────────────────────────────────── */
 
 test("横栏按钮：返回 / 前进 / 刷新 / 回题库 各做各的事", async () => {
-  const env = await boot({ storage: { "fenbi-wrapper-toolbar": "expanded" } });
+  const env = await boot({});
   env.history.pushState({}, "", "/spa/tiku/guide/question/search?q=x");
   const searchPath = env.location.pathname;
 
@@ -237,13 +235,13 @@ test("横栏按钮：返回 / 前进 / 刷新 / 回题库 各做各的事", asyn
 });
 
 test("按钮上内联显示当前平台的快捷键", async () => {
-  const mac = await boot({ storage: { "fenbi-wrapper-toolbar": "expanded" }, platform: "MacIntel" });
+  const mac = await boot({ platform: "MacIntel" });
   assert.match(mac.toolbarButton("back").textContent, /⌘\[/);
   assert.match(mac.toolbarButton("forward").textContent, /⌘\]/);
   assert.match(mac.toolbarButton("reload").textContent, /⌘R/);
   assert.match(mac.toolbarButton("catalog").textContent, /⌘⇧\[/);
 
-  const win = await boot({ storage: { "fenbi-wrapper-toolbar": "expanded" }, platform: "Win32" });
+  const win = await boot({ platform: "Win32" });
   assert.match(win.toolbarButton("back").textContent, /Alt\+←/);
   assert.match(win.toolbarButton("forward").textContent, /Alt\+→/);
   assert.match(win.toolbarButton("reload").textContent, /Ctrl\+R/);

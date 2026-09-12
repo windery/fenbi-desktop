@@ -173,51 +173,79 @@
     "  align-items: center;\n" +
     "  gap: 8px;\n" +
     "  height: 40px;\n" +
-    "  padding: 0 8px;\n" +
+    "  padding: 0 14px;\n" +
     "  background: #ffffff;\n" +
-    "  border-bottom: 1px solid #e3e5e8;\n" +
+    "  border-bottom: 1px solid #e6e9ef;\n" +
+    "  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);\n" +
     "  font: 13px/1 -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;\n" +
-    "  color: #2b3a4a;\n" +
+    "  color: #46536a;\n" +
     "}\n" +
     ":host([data-fenbi-toolbar='collapsed']) .fenbi-toolbar {\n" +
     "  height: 16px;\n" +
-    "  padding: 0 4px;\n" +
+    "  padding: 0 6px;\n" +
     "  border-bottom: none;\n" +
+    "  box-shadow: none;\n" +
     "}\n" +
     ".fenbi-toolbar-bar {\n" +
     "  display: flex;\n" +
     "  align-items: center;\n" +
     "  gap: 8px;\n" +
     "}\n" +
+    ".fenbi-toolbar-btn {\n" +
+    "  display: inline-flex;\n" +
+    "  align-items: center;\n" +
+    "  gap: 7px;\n" +
+    "  height: 28px;\n" +
+    "  padding: 0 12px;\n" +
+    "  cursor: pointer;\n" +
+    "  border: 1px solid #e3e7ef;\n" +
+    "  border-radius: 999px;\n" +
+    "  background: #f4f6fa;\n" +
+    "  color: #46536a;\n" +
+    "  font: inherit;\n" +
+    "  transition: background 0.12s, border-color 0.12s, color 0.12s;\n" +
+    "}\n" +
+    ".fenbi-toolbar-btn:hover {\n" +
+    "  border-color: #bfd0f8;\n" +
+    "  background: #eef3ff;\n" +
+    "  color: #2f6ae0;\n" +
+    "}\n" +
+    ".fenbi-toolbar-icon {\n" +
+    "  color: #4a7df0;\n" +
+    "}\n" +
+    ".fenbi-toolbar-key {\n" +
+    "  font-size: 11px;\n" +
+    "  color: #8792a6;\n" +
+    "}\n" +
+    ".fenbi-toolbar-btn:hover .fenbi-toolbar-key {\n" +
+    "  color: #5b86e8;\n" +
+    "}\n" +
+    ".fenbi-toolbar-collapse {\n" +
+    "  margin-left: auto;\n" +
+    "  height: 24px;\n" +
+    "  padding: 0 10px;\n" +
+    "  cursor: pointer;\n" +
+    "  border: none;\n" +
+    "  border-radius: 7px;\n" +
+    "  background: transparent;\n" +
+    "  color: #8792a6;\n" +
+    "  font: inherit;\n" +
+    "  font-size: 12px;\n" +
+    "}\n" +
+    ".fenbi-toolbar-collapse:hover {\n" +
+    "  background: #f2f4f8;\n" +
+    "  color: #4a7df0;\n" +
+    "}\n" +
     ".fenbi-toolbar-handle {\n" +
     "  height: 14px;\n" +
     "  padding: 0 8px;\n" +
     "  cursor: pointer;\n" +
-    "  border: 1px solid #d8dce2;\n" +
-    "  border-radius: 0 0 6px 6px;\n" +
+    "  border: 1px solid #e3e7ef;\n" +
+    "  border-radius: 0 0 7px 7px;\n" +
     "  background: #ffffff;\n" +
     "  color: #4a7df0;\n" +
     "  font-size: 10px;\n" +
     "  line-height: 1;\n" +
-    "}\n" +
-    ".fenbi-toolbar-btn {\n" +
-    "  height: 26px;\n" +
-    "  padding: 0 10px;\n" +
-    "  cursor: pointer;\n" +
-    "  border: 1px solid #d8dce2;\n" +
-    "  border-radius: 4px;\n" +
-    "  background: #f7f8fa;\n" +
-    "  color: #2b3a4a;\n" +
-    "  font: inherit;\n" +
-    "}\n" +
-    ".fenbi-toolbar-btn:hover {\n" +
-    "  border-color: #4a7df0;\n" +
-    "  background: #eef3ff;\n" +
-    "  color: #4a7df0;\n" +
-    "}\n" +
-    ".fenbi-toolbar-key {\n" +
-    "  margin-left: 6px;\n" +
-    "  color: #8a94a6;\n" +
     "}\n";
 
   function isMacPlatform() {
@@ -238,19 +266,21 @@
   /* 横栏上的四个动作：这里只写"叫什么"，行为统一在 runShortcut 里，
    * 与快捷键共用同一处实现（少一处会走偏的映射）。 */
   var TOOLBAR_ACTIONS = [
-    { action: "back", text: "返回上一页" },
-    { action: "forward", text: "前进" },
-    { action: "reload", text: "刷新" },
-    { action: "catalog", text: "回题库" },
+    { action: "back", icon: "←", text: "返回上一页" },
+    { action: "forward", icon: "→", text: "前进" },
+    { action: "reload", icon: "⟳", text: "刷新" },
+    { action: "catalog", icon: "⌂", text: "回题库" },
   ];
 
+  /* 默认**展开**：横栏上的快捷键是主要用法，藏起来等于没有。
+   * 只有用户自己点过「收起」才记忆成收起。 */
   function readToolbarState() {
     try {
-      return localStorage.getItem(TOOLBAR_KEY) === "expanded"
-        ? "expanded"
-        : "collapsed";
+      return localStorage.getItem(TOOLBAR_KEY) === "collapsed"
+        ? "collapsed"
+        : "expanded";
     } catch (e) {
-      return "collapsed";
+      return "expanded";
     }
   }
 
@@ -279,23 +309,27 @@
     bar.className = "fenbi-toolbar";
     root.appendChild(bar);
 
+    function setToolbarState(next) {
+      writeToolbarState(next);
+      render(next);
+      log("toolbar " + next);
+    }
+
     function render(state) {
       host.setAttribute("data-fenbi-toolbar", state);
       bar.textContent = "";
 
-      var handle = document.createElement("button");
-      handle.className = "fenbi-toolbar-handle";
-      handle.textContent = state === "expanded" ? "▲" : "▼";
-      handle.addEventListener("click", function () {
-        var next = host.getAttribute("data-fenbi-toolbar") === "expanded"
-          ? "collapsed"
-          : "expanded";
-        writeToolbarState(next);
-        render(next);
-        log("toolbar " + next);
-      });
-      bar.appendChild(handle);
-      if (state !== "expanded") return;
+      // 收起态：只留左上角一个小箭头，点它展开
+      if (state !== "expanded") {
+        var handle = document.createElement("button");
+        handle.className = "fenbi-toolbar-handle";
+        handle.textContent = "▼";
+        handle.addEventListener("click", function () {
+          setToolbarState("expanded");
+        });
+        bar.appendChild(handle);
+        return;
+      }
 
       var row = document.createElement("div");
       row.className = "fenbi-toolbar-bar";
@@ -306,7 +340,16 @@
         var button = document.createElement("button");
         button.className = "fenbi-toolbar-btn";
         button.setAttribute("data-fenbi-action", item.action);
-        button.textContent = item.text;
+
+        var icon = document.createElement("span");
+        icon.className = "fenbi-toolbar-icon";
+        icon.textContent = item.icon;
+        button.appendChild(icon);
+
+        var label = document.createElement("span");
+        label.className = "fenbi-toolbar-label";
+        label.textContent = item.text;
+        button.appendChild(label);
 
         var key = document.createElement("span");
         key.className = "fenbi-toolbar-key";
@@ -319,6 +362,14 @@
         });
         row.appendChild(button);
       });
+
+      var collapse = document.createElement("button");
+      collapse.className = "fenbi-toolbar-collapse";
+      collapse.textContent = "收起 ⌃";
+      collapse.addEventListener("click", function () {
+        setToolbarState("collapsed");
+      });
+      bar.appendChild(collapse);
     }
 
     render(readToolbarState());
