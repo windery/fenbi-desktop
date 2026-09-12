@@ -4,27 +4,40 @@
  *
  * ## 职责边界
  *
- * 登录态的**唯一权威**是 Rust 侧维护的状态记录（app 数据目录下的 `login-state`）。
- * 这个脚本不查 cookie、不判登录态、不做定时检测，只做三件事：
+ * 这个脚本不查 cookie、不判登录态、不做定时检测——凭证只能由 Rust 侧读
+ * （HttpOnly，JS 拿不到）。它消费 Rust 推来的结论：
  *
- *   1. 启动时读一次记录：已登录 -> 进目录页，未登录 -> 立刻弹登录框
- *   2. 响应 Rust 推来的「已登出」事件：弹登录框
- *   3. 响应 Rust 推来的「已登录」事件：进目录页
+ *   1. 启动时读一次记录：观测到已登录 -> 什么都不做；没有记录 -> 弹登录框
+ *   2. 收到「观测不到会话了」：立刻弹登录框（不分页面，练习区也一样）
+ *   3. 收到「观测到凭证了」：取消所有还没执行的弹框
+ *
+ * ## 不纠正站内跳转
+ *
+ * 站点把用户带到哪个**粉笔页面**（搜索结果、试卷列表、报告…）都随它去：
+ * wrapper 不把窗口拉回目录页。踩过的坑：搜索结果是 `window.open` 打开的，
+ * 旧逻辑虽然能在当前窗口接住它，却又立刻 `location.replace` 回目录页，
+ * 表现成"搜索点了没反应"。目录页只作为冷启动入口出现（`lib.rs` 的 entry URL）。
+ *
+ * ## 记录不是真相
+ *
+ * `login-state` 只是加速缓存，可能过期。真相以 Rust 那次「页面加载完成后」
+ * 的判定为准，判定结果会反过来改写记录。
  *
  * ## 为什么不在页面里判登录态
  *
  * 凭证是 HttpOnly cookie，JS 读不到；而冷启动时站点还要靠 `persistent` cookie
  * 把 `sess` 恢复出来，这段空窗期里 DOM 和 cookie 都显示"未登录"。
- * 在页面里判会误判，于是每次启动都白弹一次登录框。判定全部交给 Rust。
+ * 在页面里判会误判，于是每次启动都白弹一次登录框。观测全部交给 Rust。
  *
- * ## 不干预站点
+ * ## 边界
  *
- * 登录、做题、分类选择都走站点自己的逻辑。脚本不刷新页面、不模拟站点操作。
+ * 登录、做题、分类选择都走站点自己的逻辑。脚本不驱动业务动作、不刷新页面；
+ * 唯一一次点击是站点自己的登录入口按钮（桌面端没有地址栏，用户点不到别处）。
  */
 (function () {
   "use strict";
 
-  var TARGET_URL = "__TARGET_URL__";
+  var TARGET_URL = __TARGET_URL__;
   var DEBUG = __DEBUG__;
 
   /* 弹登录框后是否自动切到扫码登录。
@@ -139,11 +152,186 @@
 
   var CLEAN_CSS = UI_TWEAKS ? buildCleanCss() : "";
 
+  /* ------------------------------------------------------------------ *
+   * 工具横栏
+   *
+   * 桌面端没有浏览器 chrome（地址栏、前进后退、刷新、主页），所以在页面最外层
+   * 挂一根横栏补上这四个动作。
+   *
+   * 为什么插在 body 首位：它在文档流里**占位**，把站点内容整体推下去，因此
+   * 永远不会盖住站点自己的 header——登录按钮、头像、题目页的返回箭头都在那里。
+   *
+   * 为什么样式放 Shadow DOM：既不让站点的全局 CSS 改坏按钮，也不让我们自己的
+   * 裁剪 CSS 误伤横栏。这是包装层唯一一处注入 DOM 的地方（其余只注入 CSS）。
+   * ------------------------------------------------------------------ */
+  var TOOLBAR_KEY = "fenbi-wrapper-toolbar";
+
+  var TOOLBAR_CSS =
+    ".fenbi-toolbar {\n" +
+    "  box-sizing: border-box;\n" +
+    "  display: flex;\n" +
+    "  align-items: center;\n" +
+    "  gap: 8px;\n" +
+    "  height: 40px;\n" +
+    "  padding: 0 8px;\n" +
+    "  background: #ffffff;\n" +
+    "  border-bottom: 1px solid #e3e5e8;\n" +
+    "  font: 13px/1 -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;\n" +
+    "  color: #2b3a4a;\n" +
+    "}\n" +
+    ":host([data-fenbi-toolbar='collapsed']) .fenbi-toolbar {\n" +
+    "  height: 16px;\n" +
+    "  padding: 0 4px;\n" +
+    "  border-bottom: none;\n" +
+    "}\n" +
+    ".fenbi-toolbar-bar {\n" +
+    "  display: flex;\n" +
+    "  align-items: center;\n" +
+    "  gap: 8px;\n" +
+    "}\n" +
+    ".fenbi-toolbar-handle {\n" +
+    "  height: 14px;\n" +
+    "  padding: 0 8px;\n" +
+    "  cursor: pointer;\n" +
+    "  border: 1px solid #d8dce2;\n" +
+    "  border-radius: 0 0 6px 6px;\n" +
+    "  background: #ffffff;\n" +
+    "  color: #4a7df0;\n" +
+    "  font-size: 10px;\n" +
+    "  line-height: 1;\n" +
+    "}\n" +
+    ".fenbi-toolbar-btn {\n" +
+    "  height: 26px;\n" +
+    "  padding: 0 10px;\n" +
+    "  cursor: pointer;\n" +
+    "  border: 1px solid #d8dce2;\n" +
+    "  border-radius: 4px;\n" +
+    "  background: #f7f8fa;\n" +
+    "  color: #2b3a4a;\n" +
+    "  font: inherit;\n" +
+    "}\n" +
+    ".fenbi-toolbar-btn:hover {\n" +
+    "  border-color: #4a7df0;\n" +
+    "  background: #eef3ff;\n" +
+    "  color: #4a7df0;\n" +
+    "}\n" +
+    ".fenbi-toolbar-key {\n" +
+    "  margin-left: 6px;\n" +
+    "  color: #8a94a6;\n" +
+    "}\n";
+
+  function isMacPlatform() {
+    var probe = "";
+    try {
+      probe = (navigator && (navigator.platform || navigator.userAgent)) || "";
+    } catch (e) {}
+    return /Mac|iPhone|iPad|iPod/i.test(probe);
+  }
+
+  /* 按钮上的键位提示，必须和 installShortcuts 真正绑定的键一一对应 */
+  function shortcutHints() {
+    return isMacPlatform()
+      ? { back: "⌘[", forward: "⌘]", reload: "⌘R", catalog: "⌘⇧[" }
+      : { back: "Alt+←", forward: "Alt+→", reload: "Ctrl+R", catalog: "Ctrl+⇧[" };
+  }
+
+  /* 横栏上的四个动作：这里只写"叫什么"，行为统一在 runShortcut 里，
+   * 与快捷键共用同一处实现（少一处会走偏的映射）。 */
+  var TOOLBAR_ACTIONS = [
+    { action: "back", text: "返回上一页" },
+    { action: "forward", text: "前进" },
+    { action: "reload", text: "刷新" },
+    { action: "catalog", text: "回题库" },
+  ];
+
+  function readToolbarState() {
+    try {
+      return localStorage.getItem(TOOLBAR_KEY) === "expanded"
+        ? "expanded"
+        : "collapsed";
+    } catch (e) {
+      return "collapsed";
+    }
+  }
+
+  function writeToolbarState(state) {
+    try {
+      localStorage.setItem(TOOLBAR_KEY, state);
+    } catch (e) {}
+  }
+
+  function installToolbar() {
+    if (!document.body || typeof document.body.insertBefore !== "function") return;
+
+    var host = document.createElement("div");
+    host.setAttribute("data-fenbi-toolbar", readToolbarState());
+    // 宿主元素的样式必须内联：站点的 CSS 与 Shadow DOM 都管不到它
+    host.style.cssText =
+      "display:block;position:sticky;top:0;left:0;right:0;margin:0;padding:0;z-index:2147483000;";
+
+    var root = host.attachShadow ? host.attachShadow({ mode: "open" }) : host;
+
+    var style = document.createElement("style");
+    style.textContent = TOOLBAR_CSS;
+    root.appendChild(style);
+
+    var bar = document.createElement("div");
+    bar.className = "fenbi-toolbar";
+    root.appendChild(bar);
+
+    function render(state) {
+      host.setAttribute("data-fenbi-toolbar", state);
+      bar.textContent = "";
+
+      var handle = document.createElement("button");
+      handle.className = "fenbi-toolbar-handle";
+      handle.textContent = state === "expanded" ? "▲" : "▼";
+      handle.addEventListener("click", function () {
+        var next = host.getAttribute("data-fenbi-toolbar") === "expanded"
+          ? "collapsed"
+          : "expanded";
+        writeToolbarState(next);
+        render(next);
+        log("toolbar " + next);
+      });
+      bar.appendChild(handle);
+      if (state !== "expanded") return;
+
+      var row = document.createElement("div");
+      row.className = "fenbi-toolbar-bar";
+      bar.appendChild(row);
+
+      var hints = shortcutHints();
+      TOOLBAR_ACTIONS.forEach(function (item) {
+        var button = document.createElement("button");
+        button.className = "fenbi-toolbar-btn";
+        button.setAttribute("data-fenbi-action", item.action);
+        button.textContent = item.text;
+
+        var key = document.createElement("span");
+        key.className = "fenbi-toolbar-key";
+        key.textContent = hints[item.action];
+        button.appendChild(key);
+
+        button.addEventListener("click", function () {
+          log("toolbar action", item.action);
+          runShortcut(item.action);
+        });
+        row.appendChild(button);
+      });
+    }
+
+    render(readToolbarState());
+    document.body.insertBefore(host, document.body.firstChild || null);
+  }
+
+
   /* ------------------------------------------------------------------ */
 
   var host = location.hostname;
   var isFenbi = /(^|\.)fenbi\.com$/i.test(host);
-  var isLocalTest = host === "127.0.0.1" || host === "localhost";
+  var isLocalTest =
+    host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
   if (!isFenbi && !isLocalTest) return;
 
   function log(msg, extra) {
@@ -164,23 +352,79 @@
   /* ------------------------------------------------------------------ *
    * 键盘快捷键
    *
-   * WebView 没有浏览器的地址栏和快捷键，所以自己实现。
-   *   Cmd+R / Ctrl+R  重新加载当前页
-   *
-   * 用捕获阶段监听，尽量在站点自己的按键处理之前拿到事件。
+   * WebView 没有浏览器 chrome，所以自己实现。四个动作与顶部横栏一一对应：
+   *   macOS            Windows / Linux
+   *   Cmd+[            返回上一页
+   *   Cmd+]            前进
+   *   Cmd+⇧+[          回题库目录页
+   *   Cmd+R            刷新
+   * 用捕获阶段监听，在站点自己的按键处理之前拿到事件，并 preventDefault，
+   * 不让按键漏给站点（站点自己没有任何全局 keydown 处理，实测）。
    * ------------------------------------------------------------------ */
+
+  /* 按键名：优先用 e.code（物理键，不受键盘布局影响），拿不到再退回 e.key。
+   * 返回空串表示这个键不参与判断。 */
+  function keyName(e) {
+    if (e.code === "BracketLeft") return "[";
+    if (e.code === "BracketRight") return "]";
+    if (e.code === "KeyR") return "r";
+    if (e.code === "ArrowLeft") return "left";
+    if (e.code === "ArrowRight") return "right";
+    var key = typeof e.key === "string" ? e.key.toLowerCase() : "";
+    if (key === "[" || key === "{") return "[";
+    if (key === "]" || key === "}") return "]";
+    if (key === "r") return "r";
+    if (key === "arrowleft") return "left";
+    if (key === "arrowright") return "right";
+    return "";
+  }
+
+  /* 键位 → 动作（空串表示不处理）。 */
+  function shortcutAction(e, mac) {
+    var key = keyName(e);
+    if (mac) {
+      if (!e.metaKey || e.ctrlKey || e.altKey) return "";
+      if (key === "[") return e.shiftKey ? "catalog" : "back";
+      if (key === "]") return e.shiftKey ? "" : "forward";
+      if (key === "r") return e.shiftKey ? "" : "reload";
+      return "";
+    }
+    // Windows / Linux：返回与前进用浏览器惯例的 Alt+方向键
+    if (e.altKey && !e.ctrlKey && !e.metaKey) {
+      if (key === "left") return "back";
+      if (key === "right") return "forward";
+      return "";
+    }
+    if (e.ctrlKey && !e.altKey && !e.metaKey) {
+      if (key === "[") return e.shiftKey ? "catalog" : "";
+      if (key === "r") return e.shiftKey ? "" : "reload";
+    }
+    return "";
+  }
+
+  function runShortcut(action) {
+    if (action === "back") {
+      history.back();
+    } else if (action === "forward") {
+      history.forward();
+    } else if (action === "reload") {
+      location.reload();
+    } else if (action === "catalog") {
+      location.replace(TARGET_URL);
+    }
+  }
+
   function installShortcuts() {
+    var mac = isMacPlatform();
     window.addEventListener(
       "keydown",
       function (e) {
-        var mod = e.metaKey || e.ctrlKey;
-        if (!mod || e.altKey || e.shiftKey) return;
-        if (e.key !== "r" && e.key !== "R") return;
-
+        var action = shortcutAction(e, mac);
+        if (!action) return;
         e.preventDefault();
         e.stopPropagation();
-        log("shortcut: reload");
-        location.reload();
+        log("shortcut: " + action);
+        runShortcut(action);
       },
       true
     );
@@ -227,9 +471,25 @@
   /* 弹一次登录框。
    *
    * 「启动 0 等待」的落地：不预先 sleep，直接看按钮在不在；
-   * 不在就每 250ms 重试（站点渲染 header 需要一点时间），
-   * 一出现立刻点，然后切扫码。 */
+   * 不在就每 250ms 重试（站点渲染 header 需要一点时间），一出现立刻点。
+   *
+   * ⚠️ 重试必须能取消，而且每一步都要重新确认还该不该弹。曾经只写了
+   * "按钮出现就点"，于是登录已经恢复、Rust 已经判过"观测到凭证"之后，
+   * 这个 interval 还会继续点到按钮出现为止。 */
+  var promptTimer = null;
+
+  function cancelLoginPrompt(reason) {
+    if (promptTimer === null) return;
+    clearInterval(promptTimer);
+    promptTimer = null;
+    log("login prompt cancelled", reason);
+  }
+
   function openLoginOnce(reason) {
+    if (verifiedLoggedIn) {
+      log("verified logged in, no prompt", reason);
+      return;
+    }
     if (loginModalOpen()) {
       log("login modal already open", reason);
       return;
@@ -239,22 +499,27 @@
       return;
     }
 
+    // 重复事件合并：起新的重试前先掐掉旧的，避免两个 interval 同时点
+    cancelLoginPrompt("superseded by new request");
+
     var tries = 0;
-    var timer = setInterval(function () {
+    promptTimer = setInterval(function () {
       tries++;
+      if (verifiedLoggedIn) {
+        cancelLoginPrompt("verified logged in meanwhile");
+        return;
+      }
       if (loginModalOpen()) {
-        clearInterval(timer);
-        log("login modal appeared while waiting", reason);
+        cancelLoginPrompt("modal appeared while waiting");
         return;
       }
       if (loginButton()) {
-        clearInterval(timer);
+        cancelLoginPrompt("button appeared");
         doOpenLogin(reason);
         return;
       }
       if (tries >= LOGIN_BTN_RETRIES) {
-        clearInterval(timer);
-        log("login button never appeared, giving up", reason);
+        cancelLoginPrompt("login button never appeared");
       }
     }, LOGIN_BTN_RETRY_MS);
   }
@@ -275,116 +540,46 @@
     }, QR_RENDER_DELAY_MS);
   }
 
-  /* 是否在练习/考试流程内：此时**绝不能**跳转，否则会把用户从做题页踹走。
+  /* Rust 侧心跳/判定观测不到会话时推来。
    *
-   * ⚠️ 这里必须用"黑名单"思路（明确哪些是练习区）而不是"只放行 /tiku"。
-   * 踩过的坑：最初只识别 /tiku/exercise 等，结果真实的练习页在
-   *   spa.fenbi.com/ti/exam/exercise/<id>
-   * ——不在 /tiku 下，于是保护形同虚设：用户一点「去练习」，
-   * 新页面加载后脚本发现不在目录页，立刻把他踹回目录页，
-   * 表现就是"点了没反应"。 */
-  var PRACTICE_PREFIXES = [
-    "/ti/", // 真实练习/考试页：/ti/exam/exercise/<id>、/ti/... 等
-    "/tiku/exercise",
-    "/tiku/guide/realTest",
-    "/tiku/report",
-  ];
-
-  function insidePractice() {
-    var p = location.pathname;
-    for (var i = 0; i < PRACTICE_PREFIXES.length; i++) {
-      if (p.indexOf(PRACTICE_PREFIXES[i]) === 0) return true;
-    }
-    return false;
-  }
-
-  /* 进目录页。
-   *
-   * ⚠️ 这里的"已在目标页就返回"不只是省事，它是**防重载循环的必要条件**：
-   * 若在已位于目录页时还 location.replace，页面会重载 → 脚本重跑 →
-   * 又走到这里 → 再次 replace，启动路径直接陷入死循环。 */
-  function goToCatalog(reason) {
-    if (location.pathname === TARGET_PATH()) {
-      log("already at catalog", reason);
-      return;
-    }
-    // 用户在练习页就绝不打扰
-    if (insidePractice()) {
-      log("inside practice, never redirect", reason + " | " + location.pathname);
-      return;
-    }
-    log("go to catalog", reason + " | from=" + location.pathname);
-    location.replace(TARGET_URL);
-  }
-
-  function TARGET_PATH() {
-    return TARGET_URL.replace(/^https?:\/\/[^/]+/i, "").split("?")[0];
-  }
-
-  /* Rust 侧心跳/运行时检测到会话失效时推来。 */
+   * 立刻提示，不分页面。练习/考试/报告页也一样：站点自己实时上报答题数据，
+   * 包装层不需要（也不该）替它判断"现在打不打扰"。第二个参数是 Rust 早期版本
+   * 传来的 deferred 标记，现在忽略。 */
   window.__fenbiLoggedOut = function (why) {
-    log("logged out (" + why + ") -> open login modal");
-    openLoginOnce("logged-out:" + why);
+    log("logged out (" + why + ")");
+    requestLoginPrompt("logged-out:" + why);
   };
 
-  /* 权威判定说"已登录"时置位。用来取消启动路径上那个可能已经排队的弹框。 */
+  /* 权威判定说"观测到凭证"时置位：启动路径那个延迟弹框要据此取消。 */
   var verifiedLoggedIn = false;
 
-  /* Rust 侧检测到登录成功时推来。
+  /* 请求弹登录框：任何时候都直接弹。 */
+  function requestLoginPrompt(reason) {
+    if (verifiedLoggedIn) {
+      log("verified logged in, drop prompt request", reason);
+      return;
+    }
+    openLoginOnce(reason);
+  }
+
+  /* Rust 侧观测到凭证时推来。
    *
-   * 站点在登录后会自己重定向到试卷列表（实测 catalog → /spa/tiku/ →
-   * /spa/tiku/guide/home/{courseSet}/{prefix}），所以这里打个一次性标记，
-   * 让下一个页面（无论站点把我们带到哪）自己跳回目录页。
+   * 只做一件事：把所有还没执行的弹框取消掉——凭证已经在了，再弹就是打扰。
    *
-   * 为什么不在当前页面直接 location.replace：站点紧接着还会重定向，
-   * 我们会被覆盖掉。等它跳完、页面重新加载后再纠正，才抢得过。 */
+   * ⚠️ 这里**不再**安排「登录后回目录页」。站点登录后会自己重定向到它的
+   * 试卷列表页，那是站内页面，用户待在那儿是正常的；wrapper 硬把他拉回
+   * 目录页，反而会顶掉他刚打开的搜索结果页。目录页只作为冷启动入口出现。 */
   window.__fenbiLoginSucceeded = function () {
     verifiedLoggedIn = true;
-    log("login succeeded -> schedule return to catalog");
-    try {
-      sessionStorage.setItem("fenbi-return-catalog", String(Date.now()));
-    } catch (e) {}
+    cancelLoginPrompt("credentials observed");
+    log("login succeeded");
   };
-
-  /* 登录后的一次性纠正：若刚登录完却不在目录页，跳回去。
-   * 标记只用一次，因此不会和"已在目录页就返回"的防循环逻辑冲突。 */
-  var RETURN_WINDOW_MS = 60000;
-  function applyPendingReturn(reason) {
-    var raw = null;
-    try {
-      raw = sessionStorage.getItem("fenbi-return-catalog");
-    } catch (e) {}
-    if (!raw) return false;
-
-    try {
-      sessionStorage.removeItem("fenbi-return-catalog");
-    } catch (e) {}
-
-    var age = Date.now() - parseInt(raw, 10);
-    if (!(age >= 0 && age < RETURN_WINDOW_MS)) {
-      log("pending return expired, ignore", String(age));
-      return false;
-    }
-    if (location.pathname === TARGET_PATH()) {
-      log("pending return: already at catalog", reason);
-      return false;
-    }
-    // 登录后如果用户已经自己进练习页了，别把他拉回目录页
-    if (insidePractice()) {
-      log("pending return skipped: inside practice", location.pathname);
-      return false;
-    }
-
-    log("pending return -> back to catalog from " + location.pathname, reason);
-    location.replace(TARGET_URL);
-    return true;
-  }
 
   installShortcuts();
 
   /* 启动：读一次记录就行动，不等任何 cookie。
-   *   已登录 -> 直接进目录页
-   *   未登录 -> 弹登录框
+   *   观测到已登录 -> 什么都不做（用户停在站点当前页面）
+   *   没有记录     -> 弹登录框
    *
    * 但记录可能是过期的，而权威判定要等页面加载完成（约 1.5 秒）才有结果。
    * 所以这里**不能立刻弹框**——先短延迟一次，让判定有机会先纠正。
@@ -393,11 +588,10 @@
   var initialPromptDelayMs = 800;
 
   function start() {
-    log("wrapper active", location.href + " | target=" + TARGET_URL);
+    // 只记路径：完整 URL 的 query 可能带用户信息，不进日志/beacon
+    log("wrapper active", location.pathname + " | entry=" + TARGET_URL);
     applyUiTweaks();
-
-    // 刚登录完却被站点带去别处 -> 先纠正回来
-    if (applyPendingReturn("start")) return;
+    installToolbar();
 
     var p = invoke("is_known_logged_in");
     if (!p) {
@@ -408,23 +602,37 @@
     p.then(
       function (knownLoggedIn) {
         if (knownLoggedIn) {
-          log("record says logged in -> catalog");
-          goToCatalog("known-logged-in");
+          log("record says logged in -> leave the site alone");
           return;
         }
         log("record says logged out, prompt in " + initialPromptDelayMs + "ms");
         setTimeout(function () {
-          if (verifiedLoggedIn) {
-            log("verify said logged in meanwhile -> skip prompt");
-            return;
-          }
-          openLoginOnce("not-logged-in");
+          requestLoginPrompt("not-logged-in");
         }, initialPromptDelayMs);
       },
       function (err) {
         log("is_known_logged_in failed", String(err));
       }
     );
+  }
+
+  /* 仅 debug 构建暴露的内部观察口：排查时确认脚本的调度状态。
+   * release 构建下 DEBUG 为 false，不会挂这个对象。 */
+  if (DEBUG) {
+    window.__fenbiWrapperInternals = {
+      /* 时间参数一并暴露，测试就不必把生产代码里的数值抄一遍 */
+      timings: {
+        initialPromptDelayMs: initialPromptDelayMs,
+        loginBtnRetryMs: LOGIN_BTN_RETRY_MS,
+        loginBtnRetries: LOGIN_BTN_RETRIES,
+      },
+      verifiedLoggedIn: function () {
+        return verifiedLoggedIn;
+      },
+      promptTimerActive: function () {
+        return promptTimer !== null;
+      },
+    };
   }
 
   if (document.readyState === "loading") {

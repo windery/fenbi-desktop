@@ -16,7 +16,14 @@
   };
 
   /* 导航追踪：patch History API + 监听点击，把「点了什么、路由变成什么」打出来。
-   * 不依赖 init.js 里的 log（那个在 IIFE 作用域内），直接发 beacon。 */
+   * 不依赖 init.js 里的 log（那个在 IIFE 作用域内），直接发 beacon。
+   *
+   * ⚠️ 只发路径。完整 URL 的 query（labelId、试卷 id 等）会随 beacon 落到
+   * 本机终端和日志里，属于不必要的用户信息扩散。 */
+  function safePath() {
+    return location.pathname;
+  }
+
   function beacon(tag, detail) {
     try {
       new Image().src =
@@ -28,7 +35,7 @@
   ["pushState", "replaceState"].forEach(function (fn) {
     var orig = history[fn];
     history[fn] = function () {
-      beacon(fn, "-> " + String(arguments[2]) + " | from " + location.pathname);
+      beacon(fn, "-> " + String(arguments[2]).split("?")[0] + " | from " + safePath());
       return orig.apply(this, arguments);
     };
   });
@@ -49,13 +56,10 @@
       if (found && /去练习|开始做题|继续练习/.test(found.text)) {
         beacon(
           "click",
-          found.text + " <" + found.tag + "." + found.cls + "> | path=" + location.pathname
+          found.text + " <" + found.tag + "." + found.cls + "> | path=" + safePath()
         );
         setTimeout(function () {
-          beacon(
-            "after-click",
-            "path=" + location.pathname + " | search=" + location.search
-          );
+          beacon("after-click", "path=" + safePath());
         }, 1500);
       }
     },
@@ -63,8 +67,8 @@
   );
 
   window.addEventListener("beforeunload", function () {
-    beacon("beforeunload", location.pathname);
+    beacon("beforeunload", safePath());
   });
 
-  beacon("nav-trace-ready", location.pathname);
+  beacon("nav-trace-ready", safePath());
 })();

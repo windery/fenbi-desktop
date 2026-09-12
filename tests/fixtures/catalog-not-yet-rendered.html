@@ -1,0 +1,10 @@
+<!-- 目录页的首屏：header 还没渲染出来，登录按钮不存在。
+     站点是异步渲染 header 的，这一帧正是"启动 0 等待 + 重试"要处理的情况。
+     测试用 env.showLoginButton() 模拟按钮随后出现。 -->
+<div class="fb-ng-tiku-catalog">
+  <ul class="info-block">
+    <li>快速练习</li>
+    <li>历年试卷</li>
+    <li>智能组卷</li>
+  </ul>
+</div>

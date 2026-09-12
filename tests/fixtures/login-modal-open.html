@@ -1,0 +1,14 @@
+<!-- 目录页：登录框是常驻 DOM，用 display 控制显隐（站点的真实做法）。
+     这里模拟"已经弹出来了"——判断是否已弹出必须判可见性，
+     所以测试同时需要一份弹窗不可见的版本，见 login-modal-hidden.html。 -->
+<div class="nav-header-content">
+  <nav class="fb-web-nav"><a href="/">首页</a></nav>
+  <div class="header-content-logon">
+    <button class="header-content-logon-btn">登录</button>
+  </div>
+</div>
+
+<div class="login-web-modal">
+  <div class="qrcode-wrap">扫码登录</div>
+  <input placeholder="手机号" />
+</div>

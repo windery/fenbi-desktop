@@ -9,7 +9,10 @@
     "tauri": "tauri",
     "dev": "bash scripts/dev-run.sh",
     "build": "node -e \"require('fs').mkdirSync('dist',{recursive:true})\"",
-    "bundle": "tauri build"
+    "bundle": "tauri build",
+    "check:js": "node --check src-tauri/init.js && node --check src-tauri/init-debug.js && node --test",
+    "check:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml",
+    "check": "pnpm build && pnpm run check:js && pnpm run check:rust"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

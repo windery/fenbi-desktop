@@ -16,7 +16,49 @@ permissions:
   contents: write
 
 jobs:
+  # 版本号对不上的话，打出来的包会带着错误的元数据挂到 Release 上，
+  # 事后很难发现。所以先卡一道，再开始四个平台的构建。
+  verify-version:
+    name: 校验版本号一致
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: tag 与三处版本字段一致
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          conf=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          cargo=$(grep -m1 '^version' src-tauri/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "tag=$tag package.json=$pkg tauri.conf.json=$conf Cargo.toml=$cargo"
+          test "$tag" = "$pkg"
+          test "$tag" = "$conf"
+          test "$tag" = "$cargo"
+
+      - name: Cargo.lock 里的版本已同步
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const lock = fs.readFileSync("src-tauri/Cargo.lock", "utf8");
+            const found = lock.match(
+              /\[\[package\]\]\nname = "fenbi-desktop"\nversion = "([^"]+)"/
+            );
+            if (!found) {
+              console.error("Cargo.lock 里找不到 fenbi-desktop 的版本");
+              process.exit(1);
+            }
+            const want = process.env.GITHUB_REF_NAME.replace(/^v/, "");
+            if (found[1] !== want) {
+              console.error(`Cargo.lock 版本 ${found[1]} != tag ${want}；本地重跑一次 cargo build 再提交`);
+              process.exit(1);
+            }
+            console.log("Cargo.lock 版本一致:", found[1]);
+          '
+
   build:
+    needs: verify-version
     strategy:
       fail-fast: false # 一个平台失败不影响其他平台出包
       matrix:
@@ -119,8 +161,10 @@ jobs:
             ## 用法
 
             打开即进题库目录页，上次选的分类会自动恢复。
-            未登录会弹登录框，登录一次后长期有效。
+            未登录会弹登录框，登录一次后通常不用再登（会话本身由粉笔网站控制）。
             快捷键 `Cmd/Ctrl + R` 刷新页面。
+
+            只有 macOS 做过真机运行验证，Windows / Linux 目前仅验证过构建。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
