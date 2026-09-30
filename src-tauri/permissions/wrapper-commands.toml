@@ -1,8 +1,8 @@
 # app 自定义命令的权限声明。
 [[permission]]
 identifier = "allow-wrapper-commands"
-description = "允许注入脚本读取登录记录。"
+description = "允许注入脚本重读当前登录判定（只读共享快照）。"
 commands.allow = [
-    "is_known_logged_in",
+    "current_login_decision",
     "debug_request_logout",
 ]

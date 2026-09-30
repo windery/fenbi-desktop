@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "粉笔刷题",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.fenbi.wrapper",
   "build": {
     "beforeBuildCommand": "pnpm build",
@@ -11,7 +11,7 @@
     "withGlobalTauri": true,
     "windows": [],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": {
@@ -19,7 +19,7 @@
     "targets": "all",
     "category": "Education",
     "shortDescription": "粉笔题库桌面版",
-    "longDescription": "粉笔题库的桌面 wrapper：打开即进题库目录页，登录一次后长期有效。",
+    "longDescription": "粉笔题库的桌面 wrapper：打开即进题库目录页，会话由粉笔网站管理。",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

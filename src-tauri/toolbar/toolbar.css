@@ -1,0 +1,156 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #fff;
+}
+
+.fenbi-toolbar {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  background: #fff;
+  border-bottom: 1px solid #e3e8ef;
+  font: 12px/1.2 -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  color: #344054;
+}
+
+[data-fenbi-toolbar='collapsed'] .fenbi-toolbar {
+  height: 24px;
+  background: #f8fafc;
+}
+
+[data-fenbi-toolbar='loading'] .fenbi-toolbar,
+[data-fenbi-toolbar='error'] .fenbi-toolbar {
+  height: 100vh;
+  background: #f8fafc;
+}
+
+.fenbi-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.fenbi-toolbar-divider {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 6px;
+  background: #d8e0ea;
+}
+
+.fenbi-toolbar-btn,
+.fenbi-toolbar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #344054;
+  cursor: pointer;
+  font: inherit;
+  transition: background-color 120ms ease-out, color 120ms ease-out;
+}
+
+.fenbi-toolbar-btn[data-fenbi-action='catalog'] {
+  color: #285fb8;
+}
+
+.fenbi-toolbar-btn:hover,
+.fenbi-toolbar-toggle:hover,
+.fenbi-toolbar-retry:hover {
+  background: #edf3ff;
+  color: #2457a3;
+}
+
+.fenbi-toolbar-btn:active,
+.fenbi-toolbar-toggle:active,
+.fenbi-toolbar-retry:active {
+  background: #dbe8ff;
+}
+
+.fenbi-toolbar-btn:focus-visible,
+.fenbi-toolbar-toggle:focus-visible,
+.fenbi-toolbar-retry:focus-visible {
+  outline: 2px solid #285fb8;
+  outline-offset: -2px;
+}
+
+.fenbi-toolbar-btn svg,
+.fenbi-toolbar-toggle svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.fenbi-toolbar-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 14px;
+  overflow: hidden;
+  color: #475467;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fenbi-toolbar-status[data-kind='error'] {
+  color: #a4262c;
+}
+
+.fenbi-toolbar-toggle {
+  margin-left: auto;
+}
+
+[data-fenbi-toolbar='collapsed'] .fenbi-toolbar-toggle {
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  gap: 5px;
+  width: 100%;
+  height: 23px;
+  border-radius: 0;
+  color: #344054;
+}
+
+[data-fenbi-toolbar='collapsed'] .fenbi-toolbar-toggle svg {
+  width: 14px;
+  height: 14px;
+  color: #285fb8;
+}
+
+.fenbi-toolbar-toggle-label {
+  font-size: 11px;
+}
+
+.fenbi-toolbar-loading,
+.fenbi-toolbar-retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  box-sizing: border-box;
+  width: 100%;
+  height: 23px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #475467;
+  font: inherit;
+}
+
+.fenbi-toolbar-retry {
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fenbi-toolbar-btn,
+  .fenbi-toolbar-toggle { transition: none; }
+}

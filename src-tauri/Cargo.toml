@@ -1,6 +1,6 @@
 [package]
 name = "fenbi-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "粉笔刷题 macOS 桌面 wrapper"
 authors = ["huanglang"]
 edition = "2021"
@@ -17,7 +17,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["unstable"] }
 # 只用于把跳转目标序列化成 JS 字符串字面量，见 lib.rs 的 build_window
 serde_json = "1"
 

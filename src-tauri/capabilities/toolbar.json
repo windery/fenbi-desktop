@@ -1,0 +1,13 @@
+{
+  "identifier": "toolbar",
+  "description": "本地工具栏独享导航命令；按WebView而不是整个窗口授权",
+  "webviews": [
+    "toolbar"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-toolbar-action",
+    "allow-toolbar-state",
+    "allow-toggle-toolbar"
+  ]
+}

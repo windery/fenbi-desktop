@@ -1,7 +1,7 @@
 name: release
 
 # 打 tag 触发发布：
-#   git tag v0.1.0 && git push origin v0.1.0
+#   git tag v0.1.1 && git push origin v0.1.1
 #
 # 会构建 macOS（ARM64 + x64）/ Linux / Windows 并创建 GitHub Release
 # （草稿状态，需要你去 Releases 页面点 Publish）。

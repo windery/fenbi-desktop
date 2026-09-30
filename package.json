@@ -1,16 +1,16 @@
 {
   "name": "fenbi-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "粉笔题库桌面版（macOS / Windows / Linux）",
   "type": "module",
   "packageManager": "pnpm@11.22.0",
   "scripts": {
     "tauri": "tauri",
     "dev": "bash scripts/dev-run.sh",
-    "build": "node -e \"require('fs').mkdirSync('dist',{recursive:true})\"",
+    "build": "node scripts/build-ui.mjs",
     "bundle": "tauri build",
-    "check:js": "node --check src-tauri/init.js && node --check src-tauri/init-debug.js && node --test",
+    "check:js": "node --check src-tauri/init.js && node --check src-tauri/init-debug.js && node --check src-tauri/toolbar/shortcuts.js && node --check src-tauri/toolbar/toolbar.js && node --test",
     "check:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml",
     "check": "pnpm build && pnpm run check:js && pnpm run check:rust"
   },

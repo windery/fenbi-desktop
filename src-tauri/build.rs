@@ -16,10 +16,10 @@ fn main() {
         .expect("无法定位 target 目录")
         .to_path_buf();
 
-    for name in ["init.js", "init-debug.js"] {
+    for name in ["init.js", "init-debug.js", "toolbar/shortcuts.js"] {
         let src = Path::new(name);
         println!("cargo:rerun-if-changed={name}");
-        let dest = dest_dir.join(name);
+        let dest = dest_dir.join(Path::new(name).file_name().unwrap());
         if src.exists() {
             if let Err(e) = std::fs::copy(src, &dest) {
                 // 拷贝失败不该让构建挂掉，回退到内嵌版本即可
@@ -28,5 +28,14 @@ fn main() {
         }
     }
 
-    tauri_build::build()
+    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
+        tauri_build::AppManifest::new().commands(&[
+            "current_login_decision",
+            "debug_request_logout",
+            "toolbar_action",
+            "toolbar_state",
+            "toggle_toolbar",
+        ]),
+    ))
+    .expect("生成 Tauri 权限失败")
 }

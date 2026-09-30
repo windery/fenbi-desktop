@@ -9,6 +9,14 @@
 > 都已删除；取而代之的是"登录提示在所有页面一视同仁"、`on_new_window` 站内同窗跳转、
 > 以及顶部工具横栏与快捷键。现行设计以 `CONTRIBUTING.md` 的「工具横栏与快捷键」
 > 和「已验证的站点事实」为准。
+
+> ⚠️ **本轮新增的登录观察协议进一步取代了本文的登录决策部分**：Rust 区分页面
+> `Started` / `Finished`，`Finished` 后 1500ms 才做本地观察；页面不再按本地记录
+> 启动弹框，改为重读 `current_login_decision` 的 `[seq, kind]`。以 `CONTRIBUTING.md`
+> 的「启动逻辑」与「自定义命令」为准；本文其余部分保持当时的设计记录，不随本轮重写。
+
+> 2026-09-23：工具栏已迁移为独立本地 WebView，网站不再注入工具栏 DOM；Rust 分区布局、按 WebView 授权，保留登录观察、页面裁剪和快捷键。现行实现与实机验收记录见 `CONTRIBUTING.md`。
+
 本次实施新增了 `AGENTS.md`、测试与 CI，并修改了 `lib.rs` / `init.js` / `init-debug.js`
 中的登录决策、路由保护与调度逻辑。`pnpm check` 全绿；未做真实 WebView 的 UI 验证，
 未打包、未发布。实施结果与未完成项见文末第 9 节。

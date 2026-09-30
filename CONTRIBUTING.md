@@ -28,8 +28,8 @@
 Windows 上有两个已知坑：
 
 - Tauri 文档指出**同步命令里读 cookie 会死锁**（[wry#583](https://github.com/tauri-apps/wry/issues/583)）。
-  本项目不在命令里读 cookie——`is_known_logged_in` 只读文件，
-  凭证检测跑在独立线程里，所以不受影响。
+  本项目不在命令里读 cookie——`current_login_decision` 只读内存快照，
+  凭证读取跑在独立线程里，所以不受影响。
 - 首次运行需要 WebView2 运行时。已配置 `webviewInstallMode: downloadBootstrapper`，
   安装包会自动下载引导器。
 
@@ -43,8 +43,8 @@ CI 里的 apt 依赖列表见 `.github/workflows/release.yml`。
 ### 打 tag 触发
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 GitHub Actions 会并行构建四份产物（`.github/workflows/release.yml`）：
@@ -54,7 +54,7 @@ GitHub Actions 会并行构建四份产物（`.github/workflows/release.yml`）�
 | macOS ARM64 | `.dmg`、`.app` |
 | macOS x64 | `.dmg`、`.app` |
 | Linux x64 | `.AppImage`、`.deb`、`.rpm` |
-| Windows x64 | `.exe`（NSIS）、`.msi` |
+| Windows x64 | `.exe`（NSIS） |
 
 **Release 建出来是 draft 状态**，需要去 Releases 页面点 Publish 才对外可见。
 这是故意的：留一个检查产物的机会。
@@ -75,7 +75,7 @@ workflow 里刻意没有 `workflow_dispatch`。原因：Release 的 tag 名取�
 | `src-tauri/Cargo.toml` | `package.version` |
 | `src-tauri/tauri.conf.json` | `version` |
 
-tag 名与它们保持一致（`v0.1.0` ↔ `0.1.0`）。改版本号后要重跑
+tag 名与它们保持一致（`v0.1.1` ↔ `0.1.1`）。改版本号后要重跑
 `cargo build` 让 `Cargo.lock` 的元数据跟上，CI 会检查锁文件是否同步。
 
 ### 签名
@@ -139,48 +139,53 @@ wrapper **不碰站点的业务逻辑**：
 
 | 层次 | 在哪 | 谁说了算 | 已知局限 |
 | --- | --- | --- | --- |
-| **登录记录** | app 数据目录的 `login-state` 文件 | wrapper 自己写 | 会过期；只是缓存 |
+| **登录记录** | app 数据目录的 `login-state` 文件 | wrapper 自己写 | 会过期；只是本地观察记录，不代表服务端会话仍有效 |
 | **本地凭证信号** | Rust 调的 `Webview::cookies()` | 系统 WebView | 只说明 cookie 在，不说明服务端还认 |
 | **网站真实会话** | 粉笔服务端 | 只有站点知道 | wrapper 无法观测 |
 
-所以：**本地凭证存在 ≠ 已登录**。判定的目标是"这一层能观测到的最好证据"，
+所以：**本地凭证存在 ≠ 已登录**。观察的目标是"这一层能观测到的最好证据"，
 不是"服务端权威结论"。措辞和注释都不要写成后者。
 
-### 判定时机
+### 观察时机
 
-登录与否的**权威判定是「页面加载完成后检测一次」**，不是记录文件。
-`login-state` 记录只是加速缓存，让启动路径 0 等待。
+登录观察只在**页面 `Finished` 之后**起一轮窗口，`login-state` 记录不参与这个时序：
 
 | 时刻 | 行为 |
 | --- | --- |
-| 0s（读记录） | 记录 `false` → 弹登录框；记录 `true` → 什么都不做，用户停在站点当前页面 |
-| 页面加载完成 +1.5s | **权威判定**：读凭证 → 改写记录；若记录说已登录但实际未登录 → 弹框 |
-| 之后每 5 分钟 | 心跳复查，捕捉运行中的登出 |
+| 页面 `Started` | 旧观察立刻作废，当前结果置为 `pending`（未知），暂停观察与心跳 |
+| `Finished` 后等 1500ms | 等待观察窗口，**窗口内不读 cookie**；窗口结束后读一次 cookie，作为这一代页面的本地观察 |
+| 读取成功但无已知凭证（`Absent`）/ 读到已知凭证（`Present`） | 更新登录记录；结果变化时唤醒页面重读当前结果 |
+| 读取失败（`Unknown`：cookie 读取调用失败） | 不改记录、不新增提示，500ms 后重试 |
+| 之后每 5 分钟 | 心跳复查，**双向**捕捉凭证出现/消失 |
 
-### 为什么权威判定放在页面加载之后
+1500ms 只是给站点一点时间把会话恢复出来的**本地观察窗口**，不是会话恢复完成的保证；
+本地读到凭证也不等于服务端仍接受它。
 
-`sess` 是会话级 cookie，要靠落盘的 `persistent` 换取。页面加载完成时站点
-已经把这一步做完了，所以此刻读到的就是最终状态——**这才是可信的检测时刻**。
+### 为什么在 `Finished` 之后观察
 
-启动路径不查凭证，正是为了绕开"页面还没加载完"那段空窗期：那时查必然读到
-"未登录"，据此弹框就会误报。记录文件让启动路径不必等待，权威判定则保证正确性。
+`sess` 是会话级 cookie，要靠落盘的 `persistent` 换取。加载期间凭证状态可能尚未稳定，
+不能据暂时缺少凭证做启动提示；据此写 `false`、弹框都是误报。所以：
+
+- 页面 `Started` 一律不读，先把这一代结果清成 `pending`
+- 只有 `Finished` 之后才允许起观察窗口
+- 窗口内不读 cookie；窗口结束后读取失败（`Unknown`）保持未知，500ms 后重试而不是下结论
 
 ### 记录文件的角色
 
-它只是**加速缓存**，不是真相来源：
+`login-state` 是**本地观察记录**，不再负责启动时弹不弹登录框的决策：
 
-- 它让启动路径 0 等待（不必先查凭证再决定）
-- 它可能是过期的（上次退出后会话被服务端撤销），所以加载后必须判定并纠正
-- 记录与检测结果不一致时，**以检测为准**，并改写记录
+- 只落在包装层观测到的结果（`Present` / `Absent`）；`Unknown` 不改写它
+- 它可能过期：上次退出后会话被服务端撤销，本地文件不会知道
+- 它不代表服务端会话仍有效，只是本机能观测到的那部分证据
 
 ### 心跳
 
-每 5 分钟复查一次凭证，用于捕捉运行中的登出（例如你在页面里点了「退出登录」）：
+每 5 分钟复查一次凭证，双向捕捉运行中的凭证变化：
 
 | 观察 | 动作 |
 | --- | --- |
-| 已登录 → 凭证消失 | 记录改 `false` + 弹登录框（**不分页面**，做题页也一样） |
-| 未登录 → 凭证出现 | 记录改 `true`；页面不跳转 |
+| `Present` → 凭证消失（`Absent`） | 记录改 `false`，唤醒页面按 `logged-out` 处理（**不分页面**，做题页也一样） |
+| `Absent` → 凭证出现（`Present`） | 记录改 `true`，唤醒页面按 `logged-in` 取消待执行的提示；页面不跳转 |
 
 ### 凭证认哪一个 cookie
 
@@ -201,36 +206,18 @@ wrapper **不碰站点的业务逻辑**：
 曾经加过"程序退出时检测一次并写记录"，后来去掉了：
 
 - 会话失效只有两种来源——**你主动登出**（页面内立刻可测）与**服务端撤销**（本地无从得知）
-- 退出检测能覆盖的，加载后判定 + 心跳已经全覆盖
+- 退出检测能覆盖的，加载后观察 + 心跳已经全覆盖
 - 每多一套记录状态同步机制，就多一类不同步 bug；这个项目已经在这上面栽过几次
 
-现在的原则是：**记录是缓存，检测是真相，机制越少越好。**
-
-### 已知假设（尚未在真实站点验证）
-
-这些是当前实现依赖、但**没有实测证据**的判断。改动相关代码前先验证它们，
-不要把它们当成既成事实：
-
-| 假设 | 影响 | 怎么验证 |
-| --- | --- | --- |
-| 站点的心跳期间会话不会自行恢复（登出是单向的） | 心跳把 `true -> false` 之后不再回头；若站点能静默续期，会误判成登出 | 长时间挂着观察，或在 `FENBI_DEBUG_HEARTBEAT_MS` 缩短心跳后观察 |
+现在的原则是：**机制越少越好——记录只是本地观察的落地，任何时候都不拿它当服务端会话的结论。**
 
 ---
 
 ## 实现说明
 
-### 窗口直接加载远程站点
+### 一个窗口、两个 WebView
 
-`tauri.conf.json` 里 `app.windows` 是空数组，窗口在 Rust 侧创建：
-
-```rust
-WebviewWindowBuilder::new(app, "main", WebviewUrl::External(PRACTICE_URL.parse()?))
-    .initialization_script(&script)
-    .build()?;
-```
-
-`initializationScript` 不是 `WindowConfig` 的字段（已核对 `schema.tauri.app/config/2`），
-它是 `WebviewWindowBuilder` 独有的方法。要让注入脚本生效，窗口必须走 builder 创建。
+`tauri.conf.json` 的 `app.windows` 为空，Rust 用 `WindowBuilder` 创建窗口，再用 `Window::add_child` 添加本地 `toolbar` 与远程 `main` 两个 WebView。网站脚本通过 `WebviewBuilder::initialization_script` 注入，工具栏通过本地 HTML 加载。初始布局、全屏与缩放均由 Rust 控制，内容区域从工具栏底部开始。
 
 ### 注入脚本能被外部站点调用，靠的是 capability 的 remote 配置
 
@@ -238,12 +225,13 @@ WebviewWindowBuilder::new(app, "main", WebviewUrl::External(PRACTICE_URL.parse()
 
 ```json
 "remote": { "urls": ["https://*.fenbi.com", "http://127.0.0.1:8850"] },
-"permissions": ["core:default", "allow-wrapper-commands"]
+"webviews": ["main"],
+"local": false,
+"permissions": ["allow-wrapper-commands", "allow-toggle-toolbar"]
 ```
 
 自定义命令的权限在 `src-tauri/permissions/wrapper-commands.toml` 里声明，
-由 `tauri-build` 生成清单。少了 `remote` 会报
-`not allowed ... allowed on: [windows: "main", URL: local]`。
+由 `tauri-build` 生成清单；新增应用命令还需在 `build.rs` 的 `AppManifest::commands` 注册。缺少 `remote` 会导致网站调用被 ACL 拒绝。
 
 ### 站内跳转一律不纠正，目录页只作为冷启动入口
 
@@ -268,7 +256,8 @@ WebviewWindowBuilder::new(app, "main", WebviewUrl::External(PRACTICE_URL.parse()
 | `https://*.fenbi.com`、回环地址的 http（本地假站点） | 在当前窗口 `navigate` 过去 |
 | 其余：站外 http/https、`javascript:` / `file:` / `data:` … | 丢弃，停在当前页 |
 
-判定在 `login_state::new_window_allowed`，与 `entry_url_policy` 共用一套 host 规则，
+判定在 `login_state::new_window_allowed`：https 只放行粉笔域名，http 只放行回环地址。
+它与 `entry_url_policy` **不共用 host 规则**——入口 https 允许任意 host，新窗口 https 只放行粉笔。
 单元测试覆盖了伪装域（`fenbi.com.evil.example` 不放行）。
 
 ⚠️ 这里**只**拦新窗口请求，同窗口的顶层导航没有拦截器。原因是 wry 在 macOS 上把
@@ -279,15 +268,16 @@ iframe 的导航也交给同一个回调，按 host 一刀切会误伤站内的�
 
 | 命令 | 注册条件 | 作用 |
 | --- | --- | --- |
-| `is_known_logged_in` | 始终 | 读登录记录；脚本据此决定要不要弹登录框 |
+| `current_login_decision` | 始终 | 返回当前观察快照 `[seq, kind]`（`kind`：`pending` / `logged-in` / `logged-out`）；脚本据此决定弹不弹登录框 |
 | `debug_request_logout` | 仅 debug 构建 | 驱动站点自己的「退出登录」，验证登出检测链路 |
 
-就这两个。登录记录的**写入全部在 Rust 侧**（启动空窗期结论、心跳结论），
-页面不再上报登录态——页面根本不知道登录态。
+就这两个。登录记录的**写入全部在 Rust 侧**（页面加载后的观察、心跳观察），
+页面不上报登录态，只在被唤醒时重读 Rust 的当前结果。
 
-凭证判定用 `Webview::cookies()`（能读 HttpOnly，JS 读不到）。
-通知页面只通过 `eval` 调 `window.__fenbiLoginSucceeded` / `window.__fenbiLoggedOut`，
-**不刷新页面**。
+凭证读取用 `Webview::cookies()`（能读 HttpOnly，JS 读不到），在锁外进行；
+拿回结果后在锁内核对页面代号，过期结果不写记录、不改结论。
+唤醒页面只通过 `eval` 调 `window.__fenbiRefreshLoginDecision()`，**不带结论、不刷新页面**；
+页面被唤醒后自己重读当前结果，所以落在旧页面上的唤醒不会把上一代的结论带进新页面。
 
 `permissions/wrapper-commands.toml` 把两个命令都列进了 ACL，包括 debug 命令。
 这不构成 release 的暴露面：release 下 `debug_request_logout` 根本没注册，
@@ -298,35 +288,63 @@ iframe 的导航也交给同一个回调，按 host 一刀切会误伤站内的�
 `serde_json::to_string` 生成完整字符串字面量再替换进去，手工转义被彻底移除。
 改占位符写法必须同时改 `lib.rs` 的替换逻辑（有测试盯着）。
 
+### 页面侧的登录提示状态机
+
+`init.js` 不再按本地记录在固定延迟后弹框，提示完全由 Rust 的观察快照驱动：
+
+- `DOMContentLoaded` 后重读一次 `current_login_decision`；Rust 唤醒只调
+  `__fenbiRefreshLoginDecision`，页面再重读。就绪前到达的唤醒不单独排队——
+  `start()` 的那次重读拿到的快照至少和它一样新，早期通知不会丢
+- 读回的 `[seq, kind]` 按 `seq` 去重：较旧或重复的序号一律丢弃
+- `pending`：取消还没执行的「等按钮」重试，不新增提示，也不碰已经 `requested` 的闩锁
+- `logged-in`（`Present`）：取消所有待执行的提示
+- `logged-out`（`Absent`）：进入提示状态机；同一轮里只点一次登录按钮
+
+一个"轮"由凭证变化划定：发出一次请求后，同一轮里的重复 `Absent` 合并；只有真正
+观察到 `Present` 之后的 `Absent` 才开新一轮。登录框消失或时间流逝本身不算一轮结束。
+按钮还没渲染出来时每 250ms 重试、最多 24 次；预算用尽后即便再收到重复通知也不重置。
+包装层不因登录态变化做任何自动导航或刷新。
+
 ### 仅 debug 构建存在的内部观察口
 
 `DEBUG` 为真时（debug 构建，或 release + `FENBI_DEBUG=1`），`init.js` 会挂
-`window.__fenbiWrapperInternals`，暴露判定状态与时间参数。
+`window.__fenbiWrapperInternals`，暴露提示状态机与时间参数。
 用途是让 JS 测试不必把生产代码里的时间常数抄一遍。**逻辑判断仍然只有一份实现**，
 这个对象只是只读观察口。
 
 ### 工具横栏与快捷键
 
-WebView 没有浏览器 chrome（地址栏、前进后退、刷新、主页），所以 `init.js` 在页面里
-补一根横栏 + 一套快捷键，四个动作一一对应：
+一个原生窗口包含两个 child WebView：`toolbar` 加载本地工具栏，`main` 加载粉笔网站。
+Rust 负责布局和受限命令；网站仍由 `init.js` 注入快捷键与裁剪 CSS。按钮与快捷键对应：
 
 | 动作 | macOS | Windows / Linux | 实现 |
 | --- | --- | --- | --- |
 | 返回上一页 | `Cmd+[` | `Alt+←` | `history.back()` |
 | 前进 | `Cmd+]` | `Alt+→` | `history.forward()` |
-| 回题库 | `Cmd+⇧+[` | `Ctrl+⇧+[` | `location.replace(目录页)` |
+| 回题库 | `Cmd+⇧+[` | `Ctrl+⇧+[` | 将目录页加入历史记录；已在目录页时不重复加载 |
 | 刷新 | `Cmd+R` | `Ctrl+R` | `location.reload()` |
+| 展开 / 收起横栏 | `Cmd+⇧+B` | `Ctrl+⇧+B` | 切换应用的 `toolbar-state` 偏好 |
 
-**横栏**插在 `<body>` 的第一个子节点：它在文档流里占位，把站点内容整体推下去，
-因此不会盖住站点自己的 header（登录按钮/头像、题目页的返回箭头都在那里）。
-**默认展开**：40px 高，四个胶囊按钮（蓝色图标 + 文案 + 当前平台键位，hover 变蓝），
-最右侧一个轻量的「收起 ⌃」。收起后整条横栏只剩左上角一个 16px 高的小箭头，点它再展开。
-样式放在 **Shadow DOM** 里：站点的全局 CSS 改不到按钮，我们的裁剪 CSS 也不会误伤它。
-这是包装层唯一一处注入 DOM 的地方（其余只注入 CSS）。
+**键位只有一处定义**：`src-tauri/toolbar/shortcuts.js` 的 `KEY_BINDINGS`。同一张表既生成匹配逻辑
+（`shortcutAction` / `bindingMatches`），也生成悬停或键盘聚焦时在横栏空白处显示的提示文字（`bindingLabel`）。
+**不要再手写键位提示字符串**——曾经这里是两份实现，于是「收起 ⌃」写着一个根本没有绑定的键
+（`⌃` 在 mac 上是 Control，而什么都没绑），按下去毫无反应。
 
-收起状态记在 `localStorage["fenbi-wrapper-toolbar"]`：只有用户点过「收起」才写 `collapsed`，
-没写过或站点清掉了都按默认展开。站点内跳转是整页加载、脚本会重跑，所以状态必须落盘才对得上
-（否则你收起后点一个站内链接，它又弹开）。
+**横栏独立于网站 DOM**：本地 `toolbar/index.html` 加载自己的 CSS 和脚本，不使用 Shadow DOM 或 sticky。Rust 按窗口逻辑尺寸划分 36px 展开横栏与剩余内容区域，收起时高度为 24px。网站滚动、刷新和整页跳转都不会重建工具栏。
+展开态是平整的白色细条，左侧四个仅图标 SVG 按钮、右侧收起按钮；蓝色只用于强调和交互反馈。按钮保留无障碍名称，悬停、按下、键盘聚焦有清晰反馈；悬停或聚焦时在横栏空白处显示操作名称与当前平台快捷键。正式 UI 不显示当前 URL 等调试行。
+状态读取失败时显示可点击的「重试工具栏」，命令被拒绝时显示简短错误；技术细节留在控制台。
+
+**权限按 WebView 授予**：`toolbar` 仅有本地工具栏状态和导航权限；`main` 的粉笔远程页面只获登录判定与切换工具栏权限。不能用 `windows: ["main"]` 为整个窗口授权，否则两个 WebView 都会获权。应用命令通过 `AppManifest::commands` 纳入 ACL，导航命令还检查调用者标签。
+
+**平台约束**：Tauri 2.11.5 的多 WebView API 需启用 `unstable`。macOS 使用 Transparent 标题栏，避免默认 Visible 的 FullSizeContentView 把 child WebView 挤到标题栏下面；没有硬编码系统标题栏高度。主窗口 Resized / ScaleFactorChanged 统一重新布局。仍需 Windows/Linux 实机验收。
+
+**展开/收起是同一个控件**（`.fenbi-toolbar-toggle`）：始终在横栏最右，点击与快捷键共用
+`runShortcut("toggle")`。收起后横栏是一条 24px 的点击区，右侧显示明确的「展开」把手；
+点这条横栏任意位置都能展开。
+
+行为测试验证按钮与快捷键的动作一致性、收起态整条可点、状态读取失败后的重试及命令失败提示。
+
+偏好存于应用数据目录的 `toolbar-state`，由 Rust 管理，整页跳转不会改变它；状态版本号防止异步读取乱序回退布局。首次迁移默认展开，不读取原先粉笔域名下的 localStorage。网站凭证、登录记录及原 `main` WebView 标签保持不变，不启用无痕模式或更换数据目录。
 
 四个按钮**一律可点、不置灰**：Web 没有可靠的"能否前进"API，`history.length` 对 SPA 也不准，
 所以没得去时就是点了没反应。
@@ -335,9 +353,6 @@ WebView 没有浏览器 chrome（地址栏、前进后退、刷新、主页）�
 理由：站点自己实时上报答题数据，包装层不需要（也不该）替它判断"现在打不打扰"；
 而"用户是不是在考试"包装层只能靠路径猜，猜错反而制造 bug。这条简化同时删掉了
 `installRouteWatcher`——包装层不再 monkey-patch 站点的 `history.pushState`。
-
-⚠️ 已知限制：横栏靠 `position: sticky` 置顶，只在 body（或它所在链路的滚动容器）
-就是滚动容器时才会吸附；站点若把滚动放在内层 div，横栏会随页面滚走。这是"不追求美观"的取舍。
 
 按键判定优先用 `e.code`（物理键，不受键盘布局影响），拿不到再退回 `e.key`。
 捕获阶段监听并 `preventDefault`，不让按键漏给站点——实测站点自己没有任何全局
@@ -349,19 +364,31 @@ WebView 没有浏览器 chrome（地址栏、前进后退、刷新、主页）�
 `init.js` 顶部有一组选择器常量（`UI_TWEAKS` 默认 `true` 总开关）。只注入 CSS，
 不碰站点逻辑。站点改版时选择器失效的表现只是"该隐藏的没隐藏"，不影响做题。
 
-四组选择器，**按隐藏方式分类**，不能混：
+五组选择器，**按隐藏方式分类**，不能混：
 
 | 常量 | 手法 | 用于 | 当前内容 |
 | --- | --- | --- | --- |
-| `HIDE_SELECTORS` | `display: none` | 整块移除、不留空间 | `app-award-exam-banner`（活动横幅） |
+| `HIDE_SELECTORS` | `display: none` | 整块移除、不留空间 | 活动横幅；`.member-area`（会员卡入口 + 悬停扫码卡片）；`#userlogout a.popover-content`（我的课程）；`i.paper-tag-help` |
 | `COLLAPSE_SELECTORS` | 不可见且尺寸归零 | 顶栏这类需要"让出宽度"的 flex 子项 | `nav.fb-web-nav`（顶栏 tab） |
 | `HIDE_CONTENT_SELECTORS` | 不可见但**保留原始尺寸** | 清空内容、留下留白 | 页脚三段 |
+| `NON_INTERACTIVE_SELECTORS` | **保留可见**、只去掉点击 | 留着占位但不能再导航的入口 | `a.fenbi-icon-url`（logo） |
 | `SHRINK_HEIGHT_CSS` | 改高度 | 压掉页脚过厚的留白 | `fb-web-footer` 高度 50% |
 
 把 `COLLAPSE_SELECTORS` 和 `HIDE_CONTENT_SELECTORS` 用反，就是踩过的坑：
 前者必须让出宽度，后者一旦归零留白就没了。
 
-**刻意保留**：`a.fenbi-icon-url`（logo）与 `.header-content-logon`（登录按钮 / 用户头像）。
+**会员卡**（「职测会员卡 / 尚未开通」）的扫码弹窗是**悬停**出来的，但卡片就在
+`.member-area` 内部（`article.buy-member-app-popup > fenbi-member-card`），
+所以摘掉入口即可，不需要单独处理弹窗；结构常驻、靠透明度显隐，只注入 CSS 就够。
+
+**刻意保留可见但不可点**：`a.fenbi-icon-url`（logo）。整块拿掉会让顶栏左端空一截，
+而它原本跳 fenbi.com 首页，属于"离开刷题"的入口。做法是
+`NON_INTERACTIVE_SELECTORS`（`pointer-events: none` + `cursor: default`），
+鼠标点击与键盘 Enter 激活都会失效；`href` 仍在 DOM 里（本层只注入 CSS，不动站点节点）。
+
+**必须完整保留**：`.header-content-logon`（登录按钮 / 用户头像 / 退出登录）。
+用户菜单只藏了 `#userlogout a.popover-content` 这一条——账号行与「退出登录」都是
+`div.popover-content`，不在这条选择器的作用范围内，所以退出登录照旧可用。
 
 > ⚠️ 不要隐藏整个 header。登录按钮和用户菜单都在 `.header-content-logon` 里，
 > 隐藏了就没法登录、也没法退出登录。
@@ -370,6 +397,27 @@ WebView 没有浏览器 chrome（地址栏、前进后退、刷新、主页）�
 > 把右侧头像顶到最右；一旦脱离 flex 流，logo 和头像会挤到一起。
 > 所以用"不可见但仍占位"。
 
+> ⚠️ 选择器要**不带 Angular 作用域哈希**（`.member-area` 上是 `ng-tns-c38-0` 这类），
+> 否则站点下次构建哈希一变就失配。
+
+**CSS 文本有测试盯着，效果没测**：`tests/js/page-tweaks.test.mjs` 的裁剪用例只断言
+注入的那份 CSS 里写了哪些选择器与手法——harness 没有 CSS 引擎，算不出真实效果。
+真实页面上的表现按下面的「UI 裁剪怎么复核」人工核对。
+
+### UI 裁剪怎么复核
+
+CSS 选择器只能对着**真实页面**定，`pnpm check` 证明不了它们还命中。加或改选择器时：
+
+1. 用 ego-browser 打开 `https://www.fenbi.com/spa/tiku/guide/catalog`（登录态），
+   在 `page.evaluate` 里按 class 读 `getBoundingClientRect()` 与 `getComputedStyle()`，
+   确认盒子、`href`、显隐；
+2. 涉及时显时隐的元素（用户菜单、会员卡悬停卡片）要真的把鼠标移上去/点开，
+   再读一次 DOM——它们的结构常驻，只看初始状态会误判；
+3. 改完在 App 里人工过一遍「必须保护的用户流程」那条清单：登录、退出登录、
+   切考试类型、搜题、进练习页都要照旧。
+
+实测记录（2026-09-12，macOS，已登录）见下面「已验证的站点事实」。
+
 ---
 
 ## 目录结构
@@ -377,16 +425,18 @@ WebView 没有浏览器 chrome（地址栏、前进后退、刷新、主页）�
 ```
 .
 ├── AGENTS.md               # 面向 AI 助手的任务边界与验证要求
-├── index.html              # 离线兜底页（正常启动不会显示）
+├── scripts/build-ui.mjs    # 本地工具栏资源复制到 dist
 ├── package.json            # 只有 @tauri-apps/cli
 ├── tests/                  # 行为测试与模拟页面
 └── src-tauri/
-    ├── init.js             # 注入脚本：登录提示 + UI 裁剪 + 工具横栏与快捷键
+    ├── init.js             # 网站注入脚本：登录提示 + UI 裁剪 + 快捷键
     ├── init-debug.js       # 仅 debug 构建注入的诊断片段
     ├── permissions/
     │   └── wrapper-commands.toml   # app 命令的 ACL 声明
-    ├── src/lib.rs          # 窗口、心跳、命令注册
-    ├── src/login_state.rs  # 纯决策逻辑：凭证三态、路由分类、调度参数
+    ├── src/lib.rs          # 窗口、观察调度线程、命令注册
+    ├── toolbar/            # 本地工具栏 HTML/CSS/JS，共享快捷键表
+    ├── src/toolbar.rs      # 双 WebView 布局、工具栏命令与状态
+    ├── src/login_state.rs  # 纯逻辑：凭证三态、Started/Finished 观察调度、记录读写、路由分类
     ├── src/main.rs         # 入口
     ├── capabilities/default.json   # 含 remote.urls 授权
     └── tauri.conf.json
@@ -423,46 +473,38 @@ EOF
 已登录时（`[fenbi-wrapper]` 前缀是 Rust 的 stdout，`BEACON:` 是注入脚本送来的）：
 
 ```text
-[fenbi-wrapper] watch start
-[fenbi-wrapper] page load #1 -> settle in 1500ms
-[fenbi-wrapper] settle: creds=Present record=Some(true)
-[fenbi-wrapper] first settle done -> heartbeat every 300000ms
-BEACON: record says logged in -> leave the site alone
+BEACON: login decision :: 1 pending
+BEACON: login decision :: 2 logged-in
 ```
 
-记录说已登录、实际已登出（先按记录放行，随后判定纠正并弹框）：
+记录说已登录、实际已登出（观察到 `Absent` 后记录被纠正，页面弹框）：
 
 ```text
-BEACON: record says logged in -> leave the site alone
-[fenbi-wrapper] settle: creds=Absent record=Some(true)
-[fenbi-wrapper] heartbeat: session gone
-BEACON: logged out (session-lost)
-BEACON: open login modal :: logged-out:session-lost
+BEACON: login decision :: 1 pending
+BEACON: login decision :: 2 logged-out
+BEACON: open login modal :: logged-out
 ```
 
-未登录启动（0 等待，按钮稍后渲染）：
+未登录启动，按钮稍后渲染：
 
 ```text
-BEACON: record says logged out, prompt in 800ms
+BEACON: login decision :: 1 pending
+BEACON: login decision :: 2 logged-out
 BEACON: login prompt cancelled :: button appeared
-BEACON: open login modal :: not-logged-in
-[fenbi-wrapper] settle: creds=Absent record=Some(false)
+BEACON: open login modal :: logged-out
 ```
 
-首次登录成功：
+用户手动登录成功（页面重载或心跳观察到 `Present`）：
 
 ```text
-BEACON: open login modal :: not-logged-in
-[fenbi-wrapper] settle: creds=Present record=Some(false)
-BEACON: login succeeded
+BEACON: login decision :: 3 logged-in
 ```
 
 会话失效 —— 所在页面立刻弹提示：
 
 ```text
-[fenbi-wrapper] heartbeat: session gone
-BEACON: logged out (session-lost)
-BEACON: open login modal :: logged-out:session-lost
+BEACON: login decision :: 4 logged-out
+BEACON: open login modal :: logged-out
 ```
 
 ### 诊断信息刻意不记的东西
@@ -482,7 +524,7 @@ BEACON: open login modal :: logged-out:session-lost
 | `FENBI_PRACTICE_URL` | 覆盖跳转目标 |
 | `FENBI_ENTRY_URL` | 覆盖窗口初始加载 URL，不设则等于目标 |
 | `FENBI_DEBUG_DROP_AFTER=8000` | 仅 debug 构建：8 秒后驱动站点退出登录，用来验证登出检测 |
-| `FENBI_DEBUG_HEARTBEAT_MS=10000` | 仅 debug 构建：把 5 分钟心跳缩短，便于测试 |
+| `FENBI_DEBUG_HEARTBEAT_MS=10000` | 把 5 分钟心跳缩短，便于测试 |
 | `FENBI_INIT_JS` | **仅测试用**：让 JS 测试跑另一份 `init.js`（见「检查与测试」） |
 
 两个 URL 覆盖会被校验：只接受 `https`，回环地址额外允许 `http`。
@@ -529,14 +571,36 @@ Windows / Linux 上的等价行为**未验证**。
 - macOS 上 Tauri 的 `initialization_script` 对外部 URL 同样生效（wry 用 `WKUserScript`
   在 `AtDocumentStart` 注入）
 
+**目录页的推广 / 无关入口（2026-09-12 用 ego-browser 实测，已登录，同一份 DOM 读的盒子）**：
+
+| 元素 | 实测 | 说明 |
+| --- | --- | --- |
+| `a.fenbi-icon-url` | 80×40，`href=https://www.fenbi.com/` | logo，跳首页 |
+| `.member-area` | 83×28 | 内含 `app-exam-member-tag.member-icon.member-icon-off`（"尚未开通"）与 `article.buy-member-app-popup > fenbi-member-card`（280×268 扫码卡片） |
+| `#userlogout` | `div.popover.bottom` | 用户菜单：`div.popover-content`（账号）、`a.popover-content`（我的课程，`target=_blank` → `/spa/pwa/tourist/gwy`）、`div.popover-content`（退出登录） |
+| `i.paper-tag-help` | 10×10 | 帮助问号；实测挂在 `app-award-exam-banner` 内部（不是顶栏） |
+| `.current-exam` / `.question-search-area` | 181×36 / 250×34 | 当前考试（可下拉切换）+ 搜题框，做题必需，**不要动** |
+| `a.cube-module-button` | 24×24，`href=//spa.fenbi.com/cube-module-cms/` | 「粉笔魔方」，**明确保留**，是实用功能不是广告 |
+
+- 用户菜单里的「我的课程」是**唯一**一个 `<a class="popover-content">`，账号行与退出登录
+  都是 `div.popover-content`——菜单项的 class 完全一样，标签是唯一稳定的区分点
+- 会员卡的悬停弹窗（`.buy-member-app-popup`）**结构常驻**，靠透明度/尺寸显隐；
+  实测悬停前后 `opacity` 变化。所以它不需要 JS 移除，摘掉 `.member-area` 即可
+- `.member-area`、`app-exam-member-tag`、`.buy-member-app-popup` 在目录页各只出现 1 次
+  且互为父子，所以整块隐藏是安全的，也不会留下空白
+- `a.cube-module-button`（粉笔魔方）**不要加进隐藏列表**：它是实用功能，不是推广位。
+  `tests/js/page-tweaks.test.mjs` 的「别误伤」用例按字面盯着这条
+- 该页共 23 个链接，除上表之外没有别的同类推广位
+
 ---
 
 ## 待做
 
 - **窗口状态记忆**：目前每次启动都强制全屏（`lib.rs` 的 `.fullscreen(true)`）。
   如果希望记住上次的窗口尺寸/位置，需要接 `tauri-plugin-window-state`。
-- **更多 UI 裁剪**：如果觉得练习页还有噪音（侧边栏推荐、活动横幅等），
-  往 `init.js` 对应的选择器常量里加即可，改完不用重编译。
+- **更多 UI 裁剪**：目录页的推广位与无关入口已清过一轮（见上方「已验证的站点事实」）。
+  练习页的噪音（侧边栏推荐、活动横幅等）还没动——往 `init.js` 对应的选择器常量里加，
+  改完不用重编译；选择器要先按「UI 裁剪怎么复核」在真实页面上核对。
 - **缩小远程授权面**：`capabilities/default.json` 目前放行整个 `https://*.fenbi.com`。
   收窄之前要先确认真实登录、目录、练习跳转会用到的域名，不能凭猜测改，
   否则会直接造成登录回归（见 [docs/improvement-proposal.md](docs/improvement-proposal.md) 第 4.2 节）。
@@ -554,31 +618,39 @@ pnpm check    # 提交前必跑
 
 ### 检查与测试
 
-`pnpm check` 依次跑：`pnpm build`（建 `dist` 占位目录，`generate_context!` 编译期要读它）
-→ JS 语法检查 → `cargo fmt --check` → `cargo clippy -D warnings` → Rust 测试 → JS 测试。
+`pnpm check` 依次跑：`pnpm build`（把本地工具栏资源复制到 `dist`，`generate_context!` 编译期读取）
+→ JS 语法检查（`node --check`）→ JS 测试（`node --test`）→ `cargo fmt --check`
+→ `cargo clippy -D warnings` → Rust 测试。
 退出码如实反映失败，CI（`.github/workflows/check.yml`）调用的就是同一个入口。
 
 | 测试 | 位置 | 覆盖什么 |
 | --- | --- | --- |
-| Rust 单元测试 | `src-tauri/src/login_state.rs`、`lib.rs` | 凭证三态判定、记录文件读写、入口 URL 与新窗口放行策略、判定动作（纯函数，不需要窗口） |
-| JS 行为测试 | `tests/js/` | 弹窗次数、重试取消、目录防循环、横栏收起/展开与四个动作、四组快捷键 |
+| Rust 单元测试 | `src-tauri/src/login_state.rs`、`lib.rs`、`toolbar.rs` | 凭证三态、`Started`/`Finished` 观察窗口、过期读取丢弃、记录格式、缓存写入决策、入口 URL、新窗口策略、工具栏来源检查与分区尺寸（纯函数，不需要窗口） |
+| JS 行为测试 | `tests/js/` | 弹窗次数、序号去重与轮次、重试取消与预算、目录防循环、工具栏 IPC 动作、收起状态与异步乱序、五组快捷键、网站不注入工具栏 DOM |
 
-JS 测试用 `tests/js/harness.mjs` 这个最小 DOM + 可控时钟替身驱动真实的 `init.js`
-（从磁盘读源码执行，不是复制一份逻辑），模拟页面放在 `tests/fixtures/`。
-之所以不用 jsdom：这里真正要控制的是**时钟**和**导航**，而这两样在 jsdom 里都不可控。
+JS 用例按登录提示、工具栏、导航快捷键与页面裁剪拆在 `tests/js/`，测试地图与单独运行方式见 [tests/README.md](tests/README.md)。
+共用的 `tests/support/browser-env.mjs` 用最小 DOM + 可控时钟替身执行真实的 `init.js`、`toolbar.js` 和快捷键脚本；
+启动辅助在 `tests/support/boot.mjs`，模拟页面放在 `tests/fixtures/`。
+替身按需控制时钟和导航历史；它不执行浏览器布局，也不访问粉笔站点。
 模拟页面通过只证明包装层行为，**不能替代真实 WebView 里的登录验证**。
 
 **不再有**跨语言共享的路由样例：练习区概念已删除，`inside_practice` 与
-`tests/fixtures/routes.txt` 一并移除，Rust 与 JS 之间只剩「页面通知」这一处薄接口。
+`tests/fixtures/routes.txt` 一并移除，登录链路用 `current_login_decision` 快照与 `__fenbiRefreshLoginDecision` 唤醒；工具栏另有独立命令与状态接口。
 
-想确认某个用例真的拦得住缺陷（而不是恒真），可以拿旧版本跑一遍：
+想确认某个用例真的拦得住缺陷（而不是恒真），可以拿**修改前的工作区快照**跑一遍。
+不要无条件用 `git show HEAD:src-tauri/init.js`：那会丢掉工作区里未提交的修改。
+改代码前先复制一份：
 
 ```bash
-git show HEAD:src-tauri/init.js > /tmp/old-init.js
-FENBI_INIT_JS=/tmp/old-init.js node --test
+snapshot="$(mktemp -t fenbi-init.XXXXXX.js)"
+cp src-tauri/init.js "$snapshot"
+# 然后修改 src-tauri/init.js，用快照跑测试
+FENBI_INIT_JS="$snapshot" node --test
 ```
 
-改登录时序、导航或页面注入时建议都做这一次对照：新用例必须在旧代码上变红。
+对照的判据是**新用例按缺陷行为失败**：旧实现必须出现预期的错误行为。
+接口缺失或测试环境不兼容导致的失败不算复现，只说明这份快照跑不了该用例——
+不能据此宣称所有新版协议测试都能原样跑在旧版上。
 
 开发**不要**用 `pnpm bundle`。两者耗时要分开看：
 
@@ -594,7 +666,7 @@ FENBI_INIT_JS=/tmp/old-init.js node --test
 
 ### 改 `init.js` 不用重编译
 
-debug 构建启动时**从磁盘读** `init.js` / `init-debug.js`（由 `build.rs` 拷到
+debug 构建启动时**从磁盘读** `init.js` / `init-debug.js` / `shortcuts.js`（由 `build.rs` 拷到
 `target/debug/`），所以调脚本只要重开 app：
 
 ```bash
@@ -614,7 +686,7 @@ pnpm bundle
 产物：
 
 - `src-tauri/target/release/bundle/macos/粉笔刷题.app`
-- `src-tauri/target/release/bundle/dmg/粉笔刷题_0.1.0_aarch64.dmg`
+- `src-tauri/target/release/bundle/dmg/粉笔刷题_0.1.1_aarch64.dmg`
 
 打包完可以直接启动已构建的 app 来测，不必重新打 DMG：
 
@@ -645,3 +717,13 @@ const PRACTICE_URL: &str = "https://www.fenbi.com/spa/tiku/guide/catalog";
 | 事业单位 笔试-公基 | `/tiku/guide/home/sydw/sydw?labelId=4147` |
 
 但用目录页更好——它自己会恢复分类，不用你维护。
+
+### 独立工具栏迁移验收
+
+原型证据：`../fenbi-toolbar-prototype` 的 `codex/toolbar-prototype` 分支；macOS 原生 WebView 验证过导航、收起展开、全屏、窗口缩放及内容页越权拒绝。正式迁移保留原有登录观察状态机与 cookie 存储，不能把原型的无痕设置带进来。
+
+修改本地工具栏后用 `pnpm dev` 重新复制资源并编译；`pnpm check` 检查真实脚本和 Rust。模拟页面通过不能替代真实登录、做题和报告页验证。
+
+2026-09-23 **旧版独立工具栏迁移验收**：`pnpm check` 通过（45 项 JS、30 项 Rust，含 fmt/clippy）。当时的 macOS 原生开发版确认已登录冷启动、刷新后保持会话、页面裁剪、独立工具栏收起展开、网站焦点下 Cmd+Shift+B、全屏退出及重启后收起偏好恢复；没有 URL/加载状态调试行。这条记录不代表本次 36px / 24px 工具栏重做已在真实 WebView 中验证。当时未执行登出、扫码、答题或报告操作，Windows/Linux 也尚未实机验证。
+
+2026-09-29 **36px / 24px 工具栏重做验收**：`pnpm check` 通过（51 项 JS、30 项 Rust，含 fmt/clippy），界面静态质量检查未报问题。macOS 未签名调试版确认全屏与窗口缩放时两个 WebView 无重叠、两种工具栏高度正常、重启后收起偏好恢复、展开后焦点回到网站。从一项已有练习分别用工具栏按钮和网站侧快捷键回题库，再返回，均回到原练习地址；未选答案或交卷。状态读取失败、命令失败和收起条空白区域点击由 JS 行为测试覆盖。Windows/Linux 尚未实机验证。

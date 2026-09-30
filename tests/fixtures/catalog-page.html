@@ -6,10 +6,61 @@
     <a href="/">首页</a>
     <a href="/tiku">题库</a>
   </nav>
+  <!-- 已登录态：头像 + 用户菜单（结构照抄线上实测的 #userlogout.popover） -->
   <div class="header-content-logon">
+    <div class="content-logon-success header-user-info">
+      <div class="show-logout"><img class="head" alt="用户头像" /></div>
+      <div id="userlogout" class="popover bottom fade-in">
+        <div class="popover-content">
+          <div class="popover-content-img zhanghao"></div>
+          <div class="popover-content-text">15594180050</div>
+        </div>
+        <a class="popover-content" target="_blank" href="https://www.fenbi.com/spa/pwa/tourist/gwy?original=fenbiweb">
+          <div class="popover-content-img kecheng"></div>
+          <div class="popover-content-text">我的课程</div>
+        </a>
+        <div class="popover-content">
+          <div class="popover-content-img tuichu"></div>
+          <div class="popover-content-text">退出登录</div>
+        </div>
+      </div>
+    </div>
     <button class="header-content-logon-btn">登录</button>
   </div>
 </div>
+
+<!-- 目录页顶栏第二排：当前考试 / 会员入口 / 魔方入口 / 搜题框（线上实测同构） -->
+<ul class="course-bar">
+  <li class="course-bar-item exam-header-row">
+    <div class="current-exam">
+      <p class="current-exam-title h-2">事考笔试</p>
+      <p class="current-exam-subtitle">陕西·单招</p>
+    </div>
+    <div class="member-area icon-area-item m-l-6">
+      <app-exam-member-tag class="member-icon">
+        <div class="member-icon member-icon-off"><span class="member-text">职测</span></div>
+      </app-exam-member-tag>
+      <article class="buy-member-app buy-member-app-popup">
+        <fenbi-member-card>
+          <div class="member-card">
+            <header class="member-info">
+              <h4>职测会员卡</h4>
+              <p>尚未开通</p>
+            </header>
+            <div class="buy-member-app-code download-fenbi-app">
+              <p>打开粉笔App购买职测会员，发现更多权益</p>
+            </div>
+          </div>
+        </fenbi-member-card>
+      </article>
+    </div>
+    <a class="cube-module-button" href="//spa.fenbi.com/cube-module-cms/">粉笔魔方</a>
+    <div class="question-search-area">
+      <div class="search-select"><div class="search-select-current">试题</div></div>
+      <input class="h-5" />
+    </div>
+  </li>
+</ul>
 
 <div class="fb-ng-tiku-catalog">
   <ul class="info-block">
@@ -17,7 +68,7 @@
     <li>历年试卷</li>
     <li>智能组卷</li>
   </ul>
-  <app-award-exam-banner>粉笔模考奖学金争霸赛</app-award-exam-banner>
+  <app-award-exam-banner>粉笔模考奖学金争霸赛<i class="paper-tag-help"></i></app-award-exam-banner>
   <section class="mokao-block">模考大赛</section>
 </div>
 

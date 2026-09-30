@@ -100,8 +100,8 @@ jobs:
           node-version: 22
 
       # `tauri::generate_context!` 在编译期就要读 frontendDist，
-      # 而 dist/ 是被 gitignore 的，所以先建出这个占位目录（pnpm build 就干这个）
-      - name: 准备 dist 占位目录
+      # 而 dist/ 是被 gitignore 的，所以先复制本地工具栏资源到 dist/
+      - name: 准备工具栏资源
         run: pnpm build
 
       - name: cargo check

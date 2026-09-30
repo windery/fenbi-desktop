@@ -16,7 +16,7 @@
 //! "已验证登录"，只写"观测到凭证"。
 
 use std::sync::{Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// 登录 cookie 的名字。
 ///
@@ -86,8 +86,8 @@ fn is_loopback_host(host: &str) -> bool {
 /// 入口 URL 的放行策略。
 ///
 /// 窗口入口来自 `FENBI_ENTRY_URL` / `FENBI_PRACTICE_URL` 环境变量，直接喂给
-/// WebView。这里只放行明文 HTTPS，外加回环地址的 HTTP（本地模拟站点用）。
-/// 其余 scheme（`file:`、`javascript:`、`data:` …）一律拒绝。
+/// WebView，所以按 scheme 把关：任意 HTTPS 主机都放行，回环地址额外允许 HTTP
+/// （本地模拟站点用）。其余 scheme（`file:`、`javascript:`、`data:` …）一律拒绝。
 ///
 /// 参数由调用方用真正的 URL 解析器拆好，避免手写解析被绕过。
 pub fn entry_url_policy(scheme: &str, host: Option<&str>) -> Result<(), String> {
@@ -119,7 +119,9 @@ fn is_fenbi_host(host: &str) -> bool {
 /// "_blank")`（实测），于是搜索点了没反应。相对 URL 由 WebView 解析成绝对地址后
 /// 才进这里，所以拿到的一定是带 host 的地址。
 ///
-/// 放行范围与 `entry_url_policy` 一致：https + 粉笔域名，回环地址额外允许 http。
+/// 放行范围比 `entry_url_policy` 窄：入口允许任意 HTTPS 主机，这里还要求
+/// host 是粉笔（含子域），因为新窗口请求来自页面里的任意链接；回环地址额外
+/// 允许 http。
 pub fn new_window_allowed(scheme: &str, host: Option<&str>) -> bool {
     let Some(host) = host else {
         return false;
@@ -131,116 +133,378 @@ pub fn new_window_allowed(scheme: &str, host: Option<&str>) -> bool {
     }
 }
 
-/// 页面加载「静止」之后做一次权威判定，该执行什么动作。
+/// 页面加载阶段。`Navigating` 表示新页面已开始加载、还没完成——此时旧观察作废，
+/// 也不能读凭证。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettleAction {
-    /// 记录改写为 true。`notify_page` 时还要通知页面：启动路径可能已按过期的
-    /// 记录排好了一个弹框，得让它取消。
-    LoggedIn { notify_page: bool },
-    /// 记录改写为 false；`notify_page` 时通知页面弹登录框。
-    LoggedOut { notify_page: bool },
-    /// 证据不足，保持现状——不写记录、不弹框。
-    Keep,
+enum LoadPhase {
+    Navigating,
+    Settled,
 }
 
-/// 页面加载完成（并等站点恢复会话）后的判定。
-///
-/// 这是启动路径唯一的权威判定：此刻站点已经用 `persistent` 把 `sess` 换出来了，
-/// 所以读到的是它能给的最好证据。
-pub fn settle_action(creds: Credentials, recorded: Option<bool>) -> SettleAction {
-    match creds {
-        // 读取失败：保持未知。不覆盖记录，也不据此弹框。
-        Credentials::Unknown => SettleAction::Keep,
-        // 观测到凭证：记录纠正为 true；记录原本不是 true 才需要通知页面取消弹框。
-        Credentials::Present => SettleAction::LoggedIn {
-            notify_page: recorded != Some(true),
-        },
-        // 观测不到凭证：记录改 false。
-        // 只有"记录说已登录"才需要提示——记录本来就是 false 时启动路径已经弹过了，
-        // 再弹一次就是重复通知。
-        Credentials::Absent => SettleAction::LoggedOut {
-            notify_page: recorded == Some(true),
-        },
-    }
-}
-
-/// 常驻心跳复查时该执行什么动作。
+/// 给页面的最终判定。`Pending` 表示当前页面还没有有效观察结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HeartbeatAction {
-    /// 没有新信息
-    Nothing,
-    /// 之前观测到已登录，现在凭证没了——通知页面弹登录框
-    SessionGone,
-    /// 之前没观测到、现在观测到了
-    SessionPresent,
+pub enum PageDecision {
+    Pending,
+    LoggedIn,
+    LoggedOut,
 }
 
-/// 心跳复查的判定。`observed` 是上一次的判定结果（`None` 表示还没判定过）。
-pub fn heartbeat_action(observed: Option<bool>, creds: Credentials) -> HeartbeatAction {
-    match (observed, creds) {
-        // 读取失败不改变任何状态——尤其不能当成登出。
-        (_, Credentials::Unknown) => HeartbeatAction::Nothing,
-        (Some(true), Credentials::Absent) => HeartbeatAction::SessionGone,
-        (Some(false), Credentials::Present) | (None, Credentials::Present) => {
-            HeartbeatAction::SessionPresent
+impl PageDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PageDecision::Pending => "pending",
+            PageDecision::LoggedIn => "logged-in",
+            PageDecision::LoggedOut => "logged-out",
         }
-        _ => HeartbeatAction::Nothing,
     }
 }
 
-/// 页面加载信号：既记代号，又让心跳线程可以被唤醒。
+/// `Finished` 之后留出的观察窗口。
 ///
-/// 心跳平时睡五分钟。若期间发生页面加载（SPA 重载、站点跳转），判定必须立刻
-/// 重新起算，而不是等这一觉睡满——否则新页面加载后最长五分钟内没有任何判定。
-pub struct PageLoadSignal {
-    gen: Mutex<u64>,
-    cv: Condvar,
+/// ⚠️ 这只是"给站点一点时间把会话恢复出来"的观察窗口，**不是**站点会话恢复
+/// 完成的保证。窗口到期后读取失败（Unknown）会继续重试；读完得到 `Absent` 也
+/// 只是这一次的本地观察，网站真实会话仍可能不同步。
+const SETTLE_MS: u64 = 1500;
+
+/// 读凭证失败（Unknown）后的重试间隔。Unknown 不写缓存、不通知，只重试。
+const RETRY_MS: u64 = 500;
+
+/// 调度器要求的下一步动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatchStep {
+    /// 等新页面加载事件；没有事件就什么都别做。
+    WaitForLoad,
+    /// 等到 `at_ms`，或者提前被加载事件唤醒。
+    WaitUntil { at_ms: u64 },
+    /// 现在读一次凭证；回来把 `token` 交回 [`WatchMachine::on_read`]。
+    ReadCredentials { token: u64 },
 }
 
-impl PageLoadSignal {
-    pub fn new() -> Self {
+/// 调度器产出的外部动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatchAction {
+    /// 改写页面判定；`notify` 为真时还要提醒页面重读快照。
+    Decide {
+        decision: PageDecision,
+        notify: bool,
+    },
+    /// 改写登录记录缓存。
+    WriteCache(bool),
+}
+
+/// 登录观察的纯调度状态机（不加锁）。
+///
+/// 所有时间都是调用方给的毫秒数（生产里是自线程启动起的毫秒），所以测试能用
+/// 一个可控时钟直接驱动**同一份**状态机，而不是复制一份逻辑。
+///
+/// 不变量：
+///   * `Navigating` 期间不读凭证、不心跳；
+///   * 只有 `Settled`（Finished）之后才起观察窗口，初始未 Finished 一律不读；
+///   * 读凭证是外部动作，结果回来时必须核对代号，旧页面的结果一律丢弃；
+///   * `Unknown` 不改缓存、不通知，只安排重试，并保留上一次观察结果。
+struct WatchMachine {
+    /// 外部已经处理到哪一代页面；每次 Started 都是新的一代。
+    gen: u64,
+    phase: LoadPhase,
+    /// 下一次观察（settle 或 Unknown 重试）的时刻。
+    deadline_ms: Option<u64>,
+    /// 下一次心跳的时刻。
+    heartbeat_ms: Option<u64>,
+    decision: PageDecision,
+    /// 登录记录缓存的镜像，用来避免无意义的重复写。
+    cache: Option<bool>,
+    /// 已经发出 `ReadCredentials`、还没回结果。
+    awaiting_read: bool,
+    heartbeat_interval_ms: u64,
+}
+
+impl WatchMachine {
+    fn new(cache: Option<bool>, heartbeat_interval_ms: u64) -> Self {
         Self {
-            gen: Mutex::new(0),
-            cv: Condvar::new(),
+            gen: 0,
+            phase: LoadPhase::Navigating,
+            deadline_ms: None,
+            heartbeat_ms: None,
+            decision: PageDecision::Pending,
+            cache,
+            awaiting_read: false,
+            heartbeat_interval_ms,
         }
     }
 
-    /// 记录一次页面加载，并唤醒正在等待的线程。
-    pub fn bump(&self) {
-        let mut gen = self.lock();
-        *gen += 1;
+    /// 页面 Started：代号前进，暂停一切观察与心跳，判定回到 Pending。
+    fn begin_navigation(&mut self) {
+        self.gen += 1;
+        self.phase = LoadPhase::Navigating;
+        self.deadline_ms = None;
+        self.heartbeat_ms = None;
+        self.awaiting_read = false;
+        self.decision = PageDecision::Pending;
+    }
+
+    /// 页面 Finished：只有此刻才允许起 1500ms 观察窗口。
+    ///
+    /// 没有 Started 的 Finished（`gen == 0`）忽略，保证"初始未 Finished 不读"。
+    fn settle(&mut self, now_ms: u64) {
+        if self.gen == 0 || self.phase == LoadPhase::Settled {
+            return;
+        }
+        self.phase = LoadPhase::Settled;
+        self.deadline_ms = Some(now_ms + SETTLE_MS);
+        self.heartbeat_ms = None;
+    }
+
+    /// 调度器现在该做什么。
+    fn poll(&mut self, now_ms: u64) -> WatchStep {
+        if self.awaiting_read {
+            // 读还在路上；外部会先把结果交回 on_read，不会重复问。
+            return WatchStep::WaitForLoad;
+        }
+        if let Some(at) = self.deadline_ms {
+            if now_ms >= at {
+                self.awaiting_read = true;
+                return WatchStep::ReadCredentials { token: self.gen };
+            }
+            return WatchStep::WaitUntil { at_ms: at };
+        }
+        if let Some(at) = self.heartbeat_ms {
+            if now_ms >= at {
+                self.awaiting_read = true;
+                return WatchStep::ReadCredentials { token: self.gen };
+            }
+            return WatchStep::WaitUntil { at_ms: at };
+        }
+        WatchStep::WaitForLoad
+    }
+
+    /// 一次凭证读取的结果。`token` 是 `poll` 给出的代号。
+    ///
+    /// 读 cookie 可能很慢，结果回来时页面可能已经换了一代：这时直接丢弃，
+    /// 旧结果既不能写缓存，也不能通知新页面。
+    fn on_read(&mut self, token: u64, creds: Credentials, now_ms: u64) -> Vec<WatchAction> {
+        self.awaiting_read = false;
+        if token != self.gen {
+            return Vec::new();
+        }
+        match creds {
+            Credentials::Unknown => {
+                // 读取失败：保持未知，不写缓存、不通知，过一会儿再试。
+                // 上一次的观察结果原样保留，但不声称它仍是真实的网站会话。
+                self.heartbeat_ms = None;
+                self.deadline_ms = Some(now_ms + RETRY_MS);
+                Vec::new()
+            }
+            Credentials::Present => self.record(true, now_ms),
+            Credentials::Absent => self.record(false, now_ms),
+        }
+    }
+
+    fn record(&mut self, present: bool, now_ms: u64) -> Vec<WatchAction> {
+        let decision = if present {
+            PageDecision::LoggedIn
+        } else {
+            PageDecision::LoggedOut
+        };
+        let mut actions = Vec::new();
+        if self.cache != Some(present) {
+            self.cache = Some(present);
+            actions.push(WatchAction::WriteCache(present));
+        }
+        if self.decision != decision {
+            self.decision = decision;
+            actions.push(WatchAction::Decide {
+                decision,
+                notify: true,
+            });
+        }
+        self.deadline_ms = None;
+        self.heartbeat_ms = Some(now_ms + self.heartbeat_interval_ms);
+        actions
+    }
+}
+
+/// `next_step` 的返回值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchPoll {
+    /// 现在读一次凭证；回来把 `token` 交给 `finish_read`。读发生在锁外。
+    Read { token: u64 },
+    /// 先睡；`version` 变化（新页面开始/完成、窗口销毁）或超时后回到 `next_step`。
+    Wait {
+        version: u64,
+        timeout_ms: Option<u64>,
+    },
+    /// 窗口已销毁，watcher 退出。
+    Stop,
+}
+
+/// 页面代号/阶段、调度状态机与判定快照的**唯一**同步状态。
+///
+/// 一把锁同时保护三者，一个 Condvar 让 watcher 能被页面加载或窗口销毁唤醒。
+/// 锁内只做纯内存操作和**小的**缓存文件写入；cookie 读取与任何 WebView 调用
+/// （eval）一律在锁外。`finish_read` 在锁内核对代号与 `stopped`，所以有效结果
+/// 更新快照、写缓存文件都与 Started 线性化，过期结果和窗口销毁后的结果直接丢弃。
+pub struct WatchShared {
+    inner: Mutex<Inner>,
+    cv: Condvar,
+    /// 生产的毫秒时钟起点。
+    start: Instant,
+}
+
+struct Inner {
+    machine: WatchMachine,
+    /// 给页面重读的快照序号；每次判定变化或新页面开始都前进。
+    seq: u64,
+    decision: PageDecision,
+    /// 等待谓词用的版本号；任何可能唤醒 watcher 的变化都让它前进。
+    version: u64,
+    stopped: bool,
+}
+
+impl WatchShared {
+    pub fn new(cache: Option<bool>, heartbeat_interval_ms: u64) -> Self {
+        Self {
+            inner: Mutex::new(Inner {
+                machine: WatchMachine::new(cache, heartbeat_interval_ms),
+                seq: 0,
+                decision: PageDecision::Pending,
+                version: 0,
+                stopped: false,
+            }),
+            cv: Condvar::new(),
+            start: Instant::now(),
+        }
+    }
+
+    /// 自启动起的毫秒数；生产里页面回调与调度线程都用它。
+    pub fn now_ms(&self) -> u64 {
+        self.start.elapsed().as_millis() as u64
+    }
+
+    /// `Started`：立刻换代号、把快照清成 pending 并递增序号、暂停观察。
+    pub fn on_started(&self) {
+        {
+            let mut inner = self.lock();
+            inner.machine.begin_navigation();
+            inner.seq += 1;
+            inner.decision = PageDecision::Pending;
+            inner.version += 1;
+        }
         self.cv.notify_all();
     }
 
-    /// 当前代号。调用方拿它当"我已经处理到哪一代"的基准。
-    pub fn current(&self) -> u64 {
-        *self.lock()
-    }
-
-    /// 最多等 `timeout_ms`。期间发生页面加载就提前返回 `true`。
-    ///
-    /// 返回 `true` 表示调用方应立即回到循环顶部重新判定，不要再执行心跳。
-    pub fn wait_for_load(&self, seen: u64, timeout_ms: u64) -> bool {
-        let gen = self.lock();
-        if *gen != seen {
-            return true;
+    /// `Finished`：允许 1500ms 后观察这一代页面。
+    pub fn on_finished(&self, now_ms: u64) {
+        {
+            let mut inner = self.lock();
+            inner.machine.settle(now_ms);
+            inner.version += 1;
         }
-        let (gen, _) = self
-            .cv
-            .wait_timeout_while(gen, Duration::from_millis(timeout_ms), |g| *g == seen)
-            .unwrap_or_else(|e| e.into_inner());
-        *gen != seen
+        self.cv.notify_all();
     }
 
-    /// 锁中毒时取回内部值继续用：这里的数据只是一个计数器，没有需要保护的不变量。
-    fn lock(&self) -> std::sync::MutexGuard<'_, u64> {
-        self.gen.lock().unwrap_or_else(|e| e.into_inner())
+    /// 当前快照。`current_login_decision` 命令就是读它，不读 cookie。
+    pub fn snapshot(&self) -> (u64, PageDecision) {
+        let inner = self.lock();
+        (inner.seq, inner.decision)
     }
-}
 
-impl Default for PageLoadSignal {
-    fn default() -> Self {
-        Self::new()
+    /// 下一步：要么在锁外读一次 cookie，要么等待超时/新事件。
+    pub fn next_step(&self, now_ms: u64) -> WatchPoll {
+        let mut inner = self.lock();
+        if inner.stopped {
+            return WatchPoll::Stop;
+        }
+        match inner.machine.poll(now_ms) {
+            WatchStep::WaitForLoad => WatchPoll::Wait {
+                version: inner.version,
+                timeout_ms: None,
+            },
+            WatchStep::WaitUntil { at_ms } => WatchPoll::Wait {
+                version: inner.version,
+                timeout_ms: Some(at_ms.saturating_sub(now_ms)),
+            },
+            WatchStep::ReadCredentials { token } => WatchPoll::Read { token },
+        }
+    }
+
+    /// 等到超时或状态变化（新页面开始/完成、窗口销毁）。
+    ///
+    /// 谓词保证不会丢唤醒：变化发生在进入 wait 之前时，这里会立刻返回。
+    pub fn wait(&self, version: u64, timeout_ms: Option<u64>) {
+        let inner = self.lock();
+        match timeout_ms {
+            Some(ms) => {
+                let _ = self
+                    .cv
+                    .wait_timeout_while(inner, Duration::from_millis(ms), |i| i.version == version)
+                    .unwrap_or_else(|e| e.into_inner());
+            }
+            None => {
+                let _guard = self
+                    .cv
+                    .wait_while(inner, |i| i.version == version)
+                    .unwrap_or_else(|e| e.into_inner());
+            }
+        }
+    }
+
+    /// 把一次锁外 cookie 读取的结果交回来。
+    ///
+    /// 锁内先核对代号与 `stopped`：结果回来时页面可能已经换了一代，或窗口
+    /// 已经销毁，这两种情况都直接丢弃，既不写缓存也不通知。有效结果在同一把
+    /// 锁里更新快照、写小缓存文件，与 Started 线性化。返回 `true` 表示锁外应
+    /// 提醒页面重读快照。
+    pub fn finish_read<F>(
+        &self,
+        token: u64,
+        creds: Credentials,
+        now_ms: u64,
+        mut write_cache: F,
+    ) -> bool
+    where
+        F: FnMut(bool),
+    {
+        let mut inner = self.lock();
+        if inner.stopped {
+            // 窗口已销毁：在途结果一律丢弃，不写缓存也不通知。
+            return false;
+        }
+        if token != inner.machine.gen {
+            // 过期：Started 已经把这一代的观察作废了。
+            return false;
+        }
+        let actions = inner.machine.on_read(token, creds, now_ms);
+        let mut notify = false;
+        for action in actions {
+            match action {
+                WatchAction::WriteCache(present) => write_cache(present),
+                WatchAction::Decide {
+                    decision,
+                    notify: n,
+                } => {
+                    inner.seq += 1;
+                    inner.decision = decision;
+                    notify |= n;
+                }
+            }
+        }
+        inner.version += 1;
+        notify
+    }
+
+    /// 窗口销毁：让 watcher 退出，不留下永远等 Condvar 的线程。
+    pub fn stop(&self) {
+        {
+            let mut inner = self.lock();
+            inner.stopped = true;
+            inner.version += 1;
+        }
+        self.cv.notify_all();
+    }
+
+    /// 锁中毒时取回内部值继续用：这里没有需要跨 panic 保持的不变量。
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -360,138 +624,272 @@ mod tests {
         assert!(!new_window_allowed("https", None));
     }
 
-    // ── 页面加载后的判定 ───────────────────────────────────────
+    // ── 生产调度器：直接驱动 WatchShared ──────────────────────
 
-    #[test]
-    fn unknown_credentials_never_change_anything() {
-        for recorded in [None, Some(true), Some(false)] {
-            assert_eq!(
-                settle_action(Credentials::Unknown, recorded),
-                SettleAction::Keep
-            );
-            assert_eq!(
-                heartbeat_action(recorded, Credentials::Unknown),
-                HeartbeatAction::Nothing
-            );
+    fn read_token(shared: &WatchShared, now_ms: u64) -> u64 {
+        match shared.next_step(now_ms) {
+            WatchPoll::Read { token } => token,
+            other => panic!("预期读取凭证，得到 {other:?}"),
         }
     }
 
     #[test]
-    fn stale_true_record_without_credentials_prompts() {
-        // 文档验收矩阵：缓存 true、凭证没了 -> 提示（不分页面，练习区也一样）
+    fn wait_and_unnotified_reads_are_expected_before_finished() {
+        let shared = WatchShared::new(None, 60_000);
+        // 初始（线程刚起、还没有任何 Finished）不读
+        assert_eq!(shared.snapshot(), (0, PageDecision::Pending));
         assert_eq!(
-            settle_action(Credentials::Absent, Some(true)),
-            SettleAction::LoggedOut { notify_page: true }
+            shared.next_step(0),
+            WatchPoll::Wait {
+                version: 0,
+                timeout_ms: None
+            }
         );
-        // 记录本来就是 false —— 启动路径已经弹过框了，不再重复弹
+
+        // 慢加载：Started 之后、Finished 之前仍然不读
+        shared.on_started();
+        assert_eq!(shared.snapshot(), (1, PageDecision::Pending));
         assert_eq!(
-            settle_action(Credentials::Absent, Some(false)),
-            SettleAction::LoggedOut { notify_page: false }
-        );
-        // 没有记录（首次启动）—— 同上，不重复弹
-        assert_eq!(
-            settle_action(Credentials::Absent, None),
-            SettleAction::LoggedOut { notify_page: false }
+            shared.next_step(10_000),
+            WatchPoll::Wait {
+                version: 1,
+                timeout_ms: None
+            }
         );
     }
 
     #[test]
-    fn credentials_present_corrects_a_stale_false_record_by_notifying_the_page() {
-        // 记录 false 但凭证在：启动路径可能已排好弹框，必须通知页面取消
+    fn only_finished_starts_the_settle_window() {
+        let shared = WatchShared::new(None, 60_000);
+        shared.on_started();
+        shared.on_finished(0);
+        // 1500ms 未到：等这 1ms
         assert_eq!(
-            settle_action(Credentials::Present, Some(false)),
-            SettleAction::LoggedIn { notify_page: true }
+            shared.next_step(SETTLE_MS - 1),
+            WatchPoll::Wait {
+                version: 2,
+                timeout_ms: Some(1)
+            }
         );
-        assert_eq!(
-            settle_action(Credentials::Present, None),
-            SettleAction::LoggedIn { notify_page: true }
-        );
-        // 记录已是 true：没有待取消的弹框
-        assert_eq!(
-            settle_action(Credentials::Present, Some(true)),
-            SettleAction::LoggedIn { notify_page: false }
-        );
-    }
-
-    // ── 心跳 ──────────────────────────────────────────────────
-
-    #[test]
-    fn heartbeat_detects_session_loss() {
-        assert_eq!(
-            heartbeat_action(Some(true), Credentials::Absent),
-            HeartbeatAction::SessionGone
-        );
+        // 窗口到了：读这一代页面
+        assert_eq!(shared.next_step(SETTLE_MS), WatchPoll::Read { token: 1 });
     }
 
     #[test]
-    fn heartbeat_reports_new_credentials_once() {
-        for observed in [None, Some(false)] {
-            assert_eq!(
-                heartbeat_action(observed, Credentials::Present),
-                HeartbeatAction::SessionPresent
-            );
-        }
-        // 已经是 true 了，没有新信息
+    fn unknown_never_writes_and_a_later_absent_prompts() {
+        let shared = WatchShared::new(None, 60_000);
+        shared.on_started();
+        shared.on_finished(0);
+        let token = read_token(&shared, SETTLE_MS);
+        let mut writes = Vec::new();
+        let notify = shared.finish_read(token, Credentials::Unknown, SETTLE_MS, |p| writes.push(p));
+        assert!(!notify, "Unknown 不新提示");
+        assert!(writes.is_empty(), "Unknown 不写缓存");
+        assert_eq!(shared.snapshot(), (1, PageDecision::Pending));
+
+        // Unknown 安排 500ms 后重试
         assert_eq!(
-            heartbeat_action(Some(true), Credentials::Present),
-            HeartbeatAction::Nothing
+            shared.next_step(SETTLE_MS + RETRY_MS - 1),
+            WatchPoll::Wait {
+                version: 3,
+                timeout_ms: Some(1)
+            }
         );
-        // 一直没凭证
+        let token = read_token(&shared, SETTLE_MS + RETRY_MS);
+        let notify = shared.finish_read(token, Credentials::Absent, SETTLE_MS + RETRY_MS, |p| {
+            writes.push(p)
+        });
+        assert!(notify, "首次 Unknown 之后重试到 Absent 必须提示");
+        assert_eq!(writes, vec![false]);
+        assert_eq!(shared.snapshot(), (2, PageDecision::LoggedOut));
+    }
+
+    #[test]
+    fn unknown_after_an_observation_keeps_the_last_decision_without_notifying() {
+        let shared = WatchShared::new(None, 1000);
+        shared.on_started();
+        shared.on_finished(0);
+        let token = read_token(&shared, SETTLE_MS);
+        let mut writes = Vec::new();
+        assert!(shared.finish_read(token, Credentials::Present, SETTLE_MS, |p| writes.push(p)));
+        let before = shared.snapshot();
+        writes.clear();
+
+        let next = SETTLE_MS + 1000;
+        let token = read_token(&shared, next);
+        let notify = shared.finish_read(token, Credentials::Unknown, next, |p| writes.push(p));
+        assert!(!notify, "已观察过，Unknown 不新提示");
+        assert!(writes.is_empty(), "Unknown 不改缓存");
+        assert_eq!(shared.snapshot(), before, "Unknown 保留上次观察结果");
+    }
+
+    #[test]
+    fn a_read_finishing_after_started_is_discarded() {
+        let shared = WatchShared::new(None, 60_000);
+        shared.on_started();
+        shared.on_finished(0);
+        let stale_token = read_token(&shared, SETTLE_MS);
+
+        // 读取还在路上，页面已经换了一代
+        shared.on_started();
+        assert_eq!(shared.snapshot(), (2, PageDecision::Pending));
+
+        let mut writes = Vec::new();
+        let notify = shared.finish_read(stale_token, Credentials::Present, SETTLE_MS + 10, |p| {
+            writes.push(p)
+        });
+        assert!(!notify, "过期结果不通知");
+        assert!(writes.is_empty(), "过期结果不写缓存");
+        assert_eq!(shared.snapshot(), (2, PageDecision::Pending));
+
+        // 新页面 Finished 之前不读，之后读的是新一代
         assert_eq!(
-            heartbeat_action(Some(false), Credentials::Absent),
-            HeartbeatAction::Nothing
+            shared.next_step(SETTLE_MS + 100),
+            WatchPoll::Wait {
+                version: 3,
+                timeout_ms: None
+            }
+        );
+        shared.on_finished(SETTLE_MS + 100);
+        assert_eq!(
+            read_token(&shared, SETTLE_MS + 100 + SETTLE_MS),
+            2,
+            "读的必须是新一代的 token"
         );
     }
 
-    // ── 可唤醒等待 ────────────────────────────────────────────
-
     #[test]
-    fn wait_returns_immediately_when_a_load_already_happened() {
-        let signal = PageLoadSignal::new();
-        signal.bump();
-        let started = std::time::Instant::now();
-        assert!(signal.wait_for_load(0, 5_000));
-        assert!(started.elapsed() < Duration::from_millis(500));
+    fn a_read_finishing_after_stop_is_discarded() {
+        let shared = WatchShared::new(None, 60_000);
+        shared.on_started();
+        shared.on_finished(0);
+        let in_flight = read_token(&shared, SETTLE_MS);
+
+        // 窗口已销毁：在途的读取结果回来时必须丢弃
+        shared.stop();
+
+        let mut writes = Vec::new();
+        let notify = shared.finish_read(in_flight, Credentials::Present, SETTLE_MS, |p| {
+            writes.push(p)
+        });
+        assert!(!notify, "stop 之后在途结果不通知");
+        assert!(writes.is_empty(), "stop 之后在途结果不写缓存");
+        assert_eq!(shared.snapshot(), (1, PageDecision::Pending));
     }
 
     #[test]
-    fn wait_times_out_on_its_own_without_a_load() {
-        let signal = PageLoadSignal::new();
-        assert!(!signal.wait_for_load(signal.current(), 30));
+    fn consecutive_loads_each_get_a_fresh_window() {
+        let shared = WatchShared::new(Some(true), 60_000);
+        shared.on_started();
+        shared.on_finished(0);
+        // 上一步的窗口还没到就又开始新页面
+        shared.on_started();
+        assert_eq!(shared.snapshot(), (2, PageDecision::Pending));
+        // 新页面 Finished 之前不读
+        assert_eq!(
+            shared.next_step(SETTLE_MS),
+            WatchPoll::Wait {
+                version: 3,
+                timeout_ms: None
+            }
+        );
+        shared.on_finished(1000);
+        assert_eq!(
+            shared.next_step(1000 + SETTLE_MS - 1),
+            WatchPoll::Wait {
+                version: 4,
+                timeout_ms: Some(1)
+            }
+        );
+        assert_eq!(read_token(&shared, 1000 + SETTLE_MS), 2);
     }
 
     #[test]
-    fn a_page_load_wakes_a_sleeping_waiter() {
+    fn a_new_page_snapshot_is_pending_immediately() {
+        let shared = WatchShared::new(None, 60_000);
+        shared.on_started();
+        shared.on_finished(0);
+        let token = read_token(&shared, SETTLE_MS);
+        let mut writes = Vec::new();
+        assert!(shared.finish_read(token, Credentials::Present, SETTLE_MS, |p| writes.push(p)));
+        assert_eq!(shared.snapshot(), (2, PageDecision::LoggedIn));
+
+        // 新页面一开始就是 pending，不等 Finished
+        shared.on_started();
+        assert_eq!(shared.snapshot(), (3, PageDecision::Pending));
+    }
+
+    #[test]
+    fn heartbeat_flips_between_present_and_absent() {
+        let shared = WatchShared::new(Some(true), 1000);
+        shared.on_started();
+        shared.on_finished(0);
+        let token = read_token(&shared, SETTLE_MS);
+        let mut writes = Vec::new();
+        assert!(shared.finish_read(token, Credentials::Present, SETTLE_MS, |p| writes.push(p)));
+        assert_eq!(shared.snapshot(), (2, PageDecision::LoggedIn));
+        // 缓存已是 true、判定没变：不重复写、不重复通知
+        assert!(writes.is_empty());
+
+        let next = SETTLE_MS + 1000;
+        let token = read_token(&shared, next);
+        assert!(shared.finish_read(token, Credentials::Absent, next, |p| writes.push(p)));
+        assert_eq!(writes, vec![false]);
+        assert_eq!(shared.snapshot(), (3, PageDecision::LoggedOut));
+
+        let next = next + 1000;
+        let token = read_token(&shared, next);
+        assert!(shared.finish_read(token, Credentials::Present, next, |p| writes.push(p)));
+        assert_eq!(writes, vec![false, true]);
+        assert_eq!(shared.snapshot(), (4, PageDecision::LoggedIn));
+    }
+
+    // ── 可唤醒等待与退出 ──────────────────────────────────────
+
+    #[test]
+    fn a_page_load_wakes_a_waiting_watcher() {
         use std::sync::Arc;
-        let signal = Arc::new(PageLoadSignal::new());
-        let seen = signal.current();
-
-        let bumper = {
-            let signal = Arc::clone(&signal);
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(50));
-                signal.bump();
-            })
+        let shared = Arc::new(WatchShared::new(None, 60_000));
+        let WatchPoll::Wait {
+            version,
+            timeout_ms: None,
+        } = shared.next_step(0)
+        else {
+            panic!("初始应为无限等待");
         };
 
-        let started = std::time::Instant::now();
-        // 心跳间隔故意设得远大于唤醒时间：没有唤醒就要睡满 5 分钟
-        assert!(signal.wait_for_load(seen, 5 * 60 * 1000));
-        let waited = started.elapsed();
-        bumper.join().expect("唤醒线程 panic");
+        let waiter = {
+            let shared = Arc::clone(&shared);
+            std::thread::spawn(move || shared.wait(version, None))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+
+        let started = Instant::now();
+        shared.on_started();
+        waiter.join().expect("等待线程 panic");
         assert!(
-            waited < Duration::from_secs(2),
-            "等待没有被打断，等了 {waited:?}"
+            started.elapsed() < Duration::from_secs(2),
+            "等待没有被页面加载打断，等了 {:?}",
+            started.elapsed()
         );
     }
 
     #[test]
-    fn consecutive_loads_are_reported_once_each() {
-        let signal = PageLoadSignal::new();
-        assert_eq!(signal.current(), 0);
-        signal.bump();
-        signal.bump();
-        assert_eq!(signal.current(), 2);
-        assert!(!signal.wait_for_load(2, 10));
+    fn stop_releases_the_watcher_immediately() {
+        let shared = WatchShared::new(None, 60_000);
+        let WatchPoll::Wait { version, .. } = shared.next_step(0) else {
+            panic!("初始应为等待");
+        };
+
+        shared.stop();
+        assert_eq!(shared.next_step(0), WatchPoll::Stop);
+
+        let started = Instant::now();
+        shared.wait(version, None);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "stop 之后不该继续睡，等了 {:?}",
+            started.elapsed()
+        );
     }
 }

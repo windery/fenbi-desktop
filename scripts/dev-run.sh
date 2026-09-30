@@ -18,6 +18,7 @@ pkill -f "target/debug/fenbi-desktop" 2>/dev/null || true
 sleep 0.5
 
 echo "==> 增量编译（会顺带同步 init.js）"
+pnpm build
 cargo build --manifest-path src-tauri/Cargo.toml
 
 echo "==> 启动"

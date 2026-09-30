@@ -1,9 +1,7 @@
 /* JS 行为测试的替身环境：最小 DOM + 可控时钟 + 可观察的导航。
  *
- * 为什么不用 jsdom：init.js 只用到极少数 DOM 接口（几个选择器、一次 click、
- * 一次 appendChild），而测试真正要控制的是**时钟**和**导航**——这两样在 jsdom 里
- * 都不可控（location 是 non-configurable，导航会变成 "Not implemented" 错误）。
- * 与其和 jsdom 的语义较劲，不如按需实现这几个接口。
+ * 为什么不用 jsdom：注入脚本和本地工具栏只用到有限的 DOM 接口，测试还需
+ * 精确控制时钟和导航历史。jsdom 不执行真实的 location 导航，故在这里按需实现。
  *
  * ⚠️ 这是替身，不是浏览器。通过它只证明**包装层自己的调度逻辑**；
  * 真实 WebView 里的登录行为必须另外人工验证（见 CONTRIBUTING.md）。
@@ -26,7 +24,7 @@ export const PRACTICE_URL = "https://spa.fenbi.com/ti/exam/exercise/1234567";
 export function initSource() {
   const file = process.env.FENBI_INIT_JS ?? DEFAULT_INIT_JS;
   return (
-    readFileSync(file, "utf8")
+    readFileSync(path.join(REPO_ROOT, "src-tauri/toolbar/shortcuts.js"), "utf8") + "\n" + readFileSync(file, "utf8")
       // 现在 init.js 里占位符不带引号（由 serde_json 生成字面量）；
       // 旧版本写成 "__TARGET_URL__"，两种都兼容，方便拿旧版本验证测试有效性。
       .replace('"__TARGET_URL__"', JSON.stringify(TARGET_URL))
@@ -232,9 +230,18 @@ function matches(element, selectorList) {
  * 建一个跑着真实 init.js 的替身环境。
  *
  * @param {object} options
- * @param {string} options.url            页面地址（决定 hostname / pathname）
- * @param {string} options.html           模拟页面（见 tests/fixtures/）
- * @param {boolean|Error} options.record  is_known_logged_in 的返回值
+ * @param {string} options.url             页面地址（决定 hostname / pathname）
+ * @param {string} options.html            模拟页面（见 tests/fixtures/）
+ * @param {[number,string]|Error} options.decision
+ *                                         Rust 侧当前快照：
+ *                                         [序号, "pending" | "logged-in" | "logged-out"]；
+ *                                         传 Error 模拟 current_login_decision 调用失败
+ * @param {number|function} options.invokeDelay
+ *                                         current_login_decision 的回复延迟（毫秒）。
+ *                                         函数按调用序号（1 起）返回延迟，用来构造乱序返回
+ * @param {function} options.invoke        完全自定义的 invoke 替身（覆盖上面的默认实现）
+ * @param {boolean} options.domReady       默认 true；false 时先停在 loading，
+ *                                         等 env.domReady() 再触发 DOMContentLoaded
  */
 export function createEnv(options = {}) {
   const clock = new Clock();
@@ -247,8 +254,8 @@ export function createEnv(options = {}) {
 
   const parsed = new URL(options.url ?? TARGET_URL);
 
-  /* 会话历史用一个真的栈来模拟，`replace` 按实测的浏览器语义实现：
-   * 替换当前条目、**不**截断 forward 栈（Chromium 实测：A→B→back→replace(C)→forward 到 B）。 */
+  /* 会话历史用一个真的栈来模拟。assign 新增条目；replace 替换当前条目、
+   * **不**截断 forward 栈（Chromium 实测：A→B→back→replace(C)→forward 到 B）。 */
   const stack = [parsed.href];
   let cursor = 0;
 
@@ -265,6 +272,13 @@ export function createEnv(options = {}) {
     pathname: parsed.pathname,
     search: parsed.search,
     href: parsed.href,
+    assign(to) {
+      navigations.push(to);
+      stack.splice(cursor + 1);
+      stack.push(new URL(to, location.href).href);
+      cursor = stack.length - 1;
+      setLocation(stack[cursor]);
+    },
     replace(to) {
       navigations.push(to);
       stack[cursor] = new URL(to, parsed.origin).href;
@@ -276,13 +290,19 @@ export function createEnv(options = {}) {
   };
 
   const document = {
-    readyState: "complete",
+    readyState: options.domReady === false ? "loading" : "complete",
     listeners: {},
     createElement(tag) {
       return new Element(tag);
     },
+    createElementNS(_namespace, tag) {
+      return new Element(tag);
+    },
     addEventListener(type, fn) {
       (document.listeners[type] ??= []).push(fn);
+    },
+    dispatch(type, event = {}) {
+      for (const fn of document.listeners[type] ?? []) fn({ target: document, ...event });
     },
     querySelectorAll(selector) {
       return descendants().filter((el) => matches(el, selector));
@@ -359,16 +379,34 @@ export function createEnv(options = {}) {
   /* 假 DOM：fixture 元素就是 body 的子节点，注入脚本插进来的节点也在同一棵树里。 */
   for (const el of parseHtml(options.html ?? "")) body.appendChild(el);
 
+  /* Rust 侧当前快照：(序号, 结论)。env.pushDecision 会更新它。 */
+  let snapshot = options.decision ?? [0, "pending"];
+
+  /* 回复延迟（毫秒）。数字对所有重读生效；函数按调用序号（1 起）返回延迟，
+   * 用来构造「旧结论晚归、新结论先到」的乱序场景。 */
+  const delayFor = (callIndex) =>
+    typeof options.invokeDelay === "function"
+      ? options.invokeDelay(callIndex)
+      : options.invokeDelay ?? 0;
+
+  const calls = [];
   const invokeImpl =
     options.invoke ??
-    (() =>
-      options.record instanceof Error
-        ? Promise.reject(options.record)
-        : Promise.resolve(Boolean(options.record)));
+    ((command) => {
+      if (command === "current_login_decision") {
+        if (snapshot instanceof Error) return Promise.reject(snapshot);
+        const result = snapshot.slice();
+        const ms = delayFor(invocations.length);
+        if (!ms) return Promise.resolve(result);
+        return new Promise((resolve) => clock.setTimeout(() => resolve(result), ms));
+      }
+      return Promise.resolve(null);
+    });
 
   window.__TAURI_INTERNALS__ = {
     invoke(command, args) {
       invocations.push(command);
+      calls.push({ command, args });
       return invokeImpl(command, args);
     },
   };
@@ -394,7 +432,7 @@ export function createEnv(options = {}) {
     localStorage,
     navigator,
     Image: FakeImage,
-    console: { log: (...args) => logs.push(args.join(" ")) },
+    console: { log: (...args) => logs.push(args.join(" ")), error: (...args) => logs.push(args.join(" ")) },
     Date: { now: () => clock.now },
     setTimeout: (fn, ms) => clock.setTimeout(fn, ms),
     setInterval: (fn, ms) => clock.setInterval(fn, ms),
@@ -404,7 +442,10 @@ export function createEnv(options = {}) {
 
   const names = Object.keys(sandbox);
   // 用 new Function 把 init.js 的源码直接跑起来：测的是真实实现，不是副本。
-  new Function(...names, initSource())(...Object.values(sandbox));
+  const source = options.toolbar
+    ? readFileSync(path.join(REPO_ROOT, "src-tauri/toolbar/shortcuts.js"), "utf8") + "\n" + readFileSync(path.join(REPO_ROOT, "src-tauri/toolbar/toolbar.js"), "utf8")
+    : initSource();
+  new Function(...names, source)(...Object.values(sandbox));
 
   const env = {
     clock,
@@ -415,6 +456,8 @@ export function createEnv(options = {}) {
     reloads,
     beacons,
     invocations,
+    calls,
+    refreshToolbar: () => window.__fenbiRefreshToolbar(),
     logs,
     history,
     localStorage: localStore,
@@ -429,6 +472,32 @@ export function createEnv(options = {}) {
       clock.advance(ms);
     },
 
+    /** 模拟文档从 loading 走到 DOMContentLoaded（配合 domReady: false）。 */
+    domReady() {
+      document.readyState = "complete";
+      document.dispatch("DOMContentLoaded");
+    },
+
+    /**
+     * 模拟 Rust 更新快照后 wake：更新 harness 里的当前快照，再调用
+     * window.__fenbiRefreshLoginDecision()——生产里 Rust 的 eval 就是这一句，
+     * **不带结论**。页面重读快照后按 seq 去重。
+     */
+    pushDecision(seq, kind) {
+      snapshot = [seq, kind];
+      env.wake();
+    },
+
+    /**
+     * 只发一次裸 wake（不更新快照）：模拟旧文档留下的 eval 落到新文档。
+     */
+    wake() {
+      if (typeof window.__fenbiRefreshLoginDecision !== "function") {
+        throw new Error("init.js 还没有 __fenbiRefreshLoginDecision 入口");
+      }
+      window.__fenbiRefreshLoginDecision();
+    },
+
     /** 让站点"渲染出"登录按钮（模拟按钮延迟出现）。 */
     showLoginButton() {
       const button = new Element("button", "header-content-logon-btn");
@@ -441,6 +510,12 @@ export function createEnv(options = {}) {
     showLoginModal() {
       const modal = new Element("div", "login-web-modal");
       body.appendChild(modal);
+      return modal;
+    },
+
+    /** 站点用 display 控制登录框显隐；这是"用户把登录框关掉"的替身。 */
+    hideLoginModal(modal) {
+      modal.visible = false;
       return modal;
     },
 
@@ -460,14 +535,14 @@ export function createEnv(options = {}) {
       return host ? host.getAttribute("data-fenbi-toolbar") : null;
     },
 
-    /** 展开态右侧那个「收起 ⌃」。 */
-    toolbarCollapse() {
-      return document.querySelectorAll(".fenbi-toolbar-collapse")[0] ?? null;
+    /** 横栏最外层那根条（展开/收起都靠它断言结构）。 */
+    toolbarBar() {
+      return document.querySelectorAll(".fenbi-toolbar")[0] ?? null;
     },
 
-    /** 收起态那个小箭头。 */
-    toolbarHandle() {
-      return document.querySelectorAll(".fenbi-toolbar-handle")[0] ?? null;
+    /** 展开/收起开关：两种状态下必须是**同一个控件**。 */
+    toolbarToggle() {
+      return document.querySelectorAll(".fenbi-toolbar-toggle")[0] ?? null;
     },
 
     /** 横栏展开后的四个动作按钮（按 data-fenbi-action 找）。 */
@@ -475,6 +550,11 @@ export function createEnv(options = {}) {
       return document
         .querySelectorAll(".fenbi-toolbar-btn")
         .find((el) => el.getAttribute("data-fenbi-action") === action) ?? null;
+    },
+
+    /** 从按钮的无障碍名称读取快捷键；可见提示在悬停/聚焦时显示在栏内。 */
+    hintText(button) {
+      return button?.getAttribute("aria-label")?.match(/\(([^)]+)\)$/)?.[1] ?? null;
     },
 
     /** 仅 debug 构建暴露的内部观察口（见 init.js 末尾）。 */
