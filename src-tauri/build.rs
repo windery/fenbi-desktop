@@ -20,22 +20,37 @@ fn main() {
         let src = Path::new(name);
         println!("cargo:rerun-if-changed={name}");
         let dest = dest_dir.join(Path::new(name).file_name().unwrap());
-        if src.exists() {
-            if let Err(e) = std::fs::copy(src, &dest) {
-                // 拷贝失败不该让构建挂掉，回退到内嵌版本即可
-                println!("cargo:warning=拷贝 {name} 到 {} 失败: {e}", dest.display());
-            }
+        if src.exists()
+            && let Err(e) = std::fs::copy(src, &dest)
+        {
+            // 拷贝失败不该让构建挂掉，回退到内嵌版本即可
+            println!("cargo:warning=拷贝 {name} 到 {} 失败: {e}", dest.display());
         }
     }
 
-    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
-        tauri_build::AppManifest::new().commands(&[
-            "current_login_decision",
-            "debug_request_logout",
-            "toolbar_action",
-            "toolbar_state",
-            "toggle_toolbar",
-        ]),
-    ))
+    // ── 授权按构建模式分开 ─────────────────────────────────────────────
+    //
+    // `capabilities/*.json` 是 release 也带的授权；`capabilities/dev/` 里的回环地址
+    // （对着本地假站点验证用）和诊断命令只在 debug 构建编进去。tauri-build 默认
+    // 递归读整个 capabilities/ 目录，所以 release 要显式收窄到顶层。
+    println!("cargo:rerun-if-changed=capabilities");
+    let profile = std::env::var("PROFILE").unwrap_or_default();
+    let capabilities = if profile == "release" {
+        "./capabilities/*"
+    } else {
+        "./capabilities/**/*"
+    };
+
+    tauri_build::try_build(
+        tauri_build::Attributes::new()
+            .capabilities_path_pattern(capabilities)
+            .app_manifest(tauri_build::AppManifest::new().commands(&[
+                "current_login_decision",
+                "debug_request_logout",
+                "toolbar_action",
+                "toolbar_state",
+                "toggle_toolbar",
+            ])),
+    )
     .expect("生成 Tauri 权限失败")
 }

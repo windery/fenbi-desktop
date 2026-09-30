@@ -1,0 +1,19 @@
+{
+  "$schema": "../../gen/schemas/desktop-schema.json",
+  "identifier": "dev-loopback",
+  "description": "仅 debug 构建：对着本地假站点（FENBI_ENTRY_URL=http://127.0.0.1:8850/...）验证时，让注入脚本也能调用 wrapper 命令，并开放诊断用的退出登录命令。release 构建不会读取 dev/ 目录（见 build.rs 的 capabilities_path_pattern）。",
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:8850"
+    ]
+  },
+  "permissions": [
+    "allow-wrapper-commands",
+    "allow-toggle-toolbar",
+    "allow-debug-logout"
+  ],
+  "webviews": [
+    "main"
+  ],
+  "local": false
+}

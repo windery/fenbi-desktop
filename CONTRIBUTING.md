@@ -19,8 +19,8 @@
 | 关注点 | 处理方式 |
 | --- | --- |
 | 快捷键 | mac 用 `metaKey`、Windows/Linux 用 `altKey`/`ctrlKey`，见「工具横栏与快捷键」 |
-| 凭证读取 | `Webview::cookies()`，三平台行为一致 |
-| 窗口全屏 | `.fullscreen(true)`，各平台原生语义 |
+| 凭证读取 | `Webview::cookies_for_url()`，三平台行为一致 |
+| 窗口尺寸 | 首次启动最大化（`.maximized(true)`），之后由 `tauri-plugin-window-state` 恢复上次的尺寸与位置 |
 
 开发入口 `pnpm dev` 目前是 **Unix-only**（Bash + `pkill`，可执行文件路径也没带 `.exe`），
 所以 Windows 上开发要用 `cargo build` + 手动启动。
@@ -133,14 +133,13 @@ wrapper **不碰站点的业务逻辑**：
 
 ## 启动逻辑
 
-### 先分清「登录态」的三个层次
+### 先分清「登录态」的两个层次
 
-这三层常被混为一谈，混淆是这类 bug 的主要来源：
+这两层常被混为一谈，混淆是这类 bug 的主要来源：
 
 | 层次 | 在哪 | 谁说了算 | 已知局限 |
 | --- | --- | --- | --- |
-| **登录记录** | app 数据目录的 `login-state` 文件 | wrapper 自己写 | 会过期；只是本地观察记录，不代表服务端会话仍有效 |
-| **本地凭证信号** | Rust 调的 `Webview::cookies()` | 系统 WebView | 只说明 cookie 在，不说明服务端还认 |
+| **本地凭证信号** | Rust 调的 `Webview::cookies_for_url()` | 系统 WebView | 只说明 cookie 在，不说明服务端还认 |
 | **网站真实会话** | 粉笔服务端 | 只有站点知道 | wrapper 无法观测 |
 
 所以：**本地凭证存在 ≠ 已登录**。观察的目标是"这一层能观测到的最好证据"，
@@ -148,14 +147,14 @@ wrapper **不碰站点的业务逻辑**：
 
 ### 观察时机
 
-登录观察只在**页面 `Finished` 之后**起一轮窗口，`login-state` 记录不参与这个时序：
+登录观察只在**页面 `Finished` 之后**起一轮窗口，观察结果只存在内存里，不落盘：
 
 | 时刻 | 行为 |
 | --- | --- |
 | 页面 `Started` | 旧观察立刻作废，当前结果置为 `pending`（未知），暂停观察与心跳 |
 | `Finished` 后等 1500ms | 等待观察窗口，**窗口内不读 cookie**；窗口结束后读一次 cookie，作为这一代页面的本地观察 |
-| 读取成功但无已知凭证（`Absent`）/ 读到已知凭证（`Present`） | 更新登录记录；结果变化时唤醒页面重读当前结果 |
-| 读取失败（`Unknown`：cookie 读取调用失败） | 不改记录、不新增提示，500ms 后重试 |
+| 读取成功但无已知凭证（`Absent`）/ 读到已知凭证（`Present`） | 更新内存快照；结果变化时唤醒页面重读当前结果 |
+| 读取失败（`Unknown`：cookie 读取调用失败） | 不改快照、不新增提示，500ms 后重试 |
 | 之后每 5 分钟 | 心跳复查，**双向**捕捉凭证出现/消失 |
 
 1500ms 只是给站点一点时间把会话恢复出来的**本地观察窗口**，不是会话恢复完成的保证；
@@ -170,13 +169,12 @@ wrapper **不碰站点的业务逻辑**：
 - 只有 `Finished` 之后才允许起观察窗口
 - 窗口内不读 cookie；窗口结束后读取失败（`Unknown`）保持未知，500ms 后重试而不是下结论
 
-### 记录文件的角色
+### 为什么没有登录记录文件
 
-`login-state` 是**本地观察记录**，不再负责启动时弹不弹登录框的决策：
-
-- 只落在包装层观测到的结果（`Present` / `Absent`）；`Unknown` 不改写它
-- 它可能过期：上次退出后会话被服务端撤销，本地文件不会知道
-- 它不代表服务端会话仍有效，只是本机能观测到的那部分证据
+早期版本把每次观察结果写进 app 数据目录的 `login-state` 文件。后来它退化成
+"只写不读"：启动时读出来的值只用来决定要不要再写一次同样的内容，判定、弹框、
+心跳都不依赖它。一个不参与决策的持久化状态只会制造"文件说登录了、站点说没有"
+这类假问题，所以整个删掉了。**现在包装层唯一落盘的状态是工具栏的收起偏好和窗口位置。**
 
 ### 心跳
 
@@ -184,12 +182,14 @@ wrapper **不碰站点的业务逻辑**：
 
 | 观察 | 动作 |
 | --- | --- |
-| `Present` → 凭证消失（`Absent`） | 记录改 `false`，唤醒页面按 `logged-out` 处理（**不分页面**，做题页也一样） |
-| `Absent` → 凭证出现（`Present`） | 记录改 `true`，唤醒页面按 `logged-in` 取消待执行的提示；页面不跳转 |
+| `Present` → 凭证消失（`Absent`） | 快照改 `logged-out`，唤醒页面处理（**不分页面**，做题页也一样） |
+| `Absent` → 凭证出现（`Present`） | 快照改 `logged-in`，唤醒页面取消待执行的提示；页面不跳转 |
 
 ### 凭证认哪一个 cookie
 
-**认 `persistent` / `sess` / `userid` 中任一存在**，这是实测校准过的：
+**认 `persistent` / `sess` / `userid` 中任一存在**，这是实测校准过的。
+只看粉笔域下的 cookie（`cookies_for_url(PRACTICE_URL)`）：站内第三方 iframe 若恰好也有
+同名 cookie，不能把它当成粉笔凭证。
 
 | cookie | 生命周期 | 落盘 |
 | --- | --- | --- |
@@ -209,7 +209,7 @@ wrapper **不碰站点的业务逻辑**：
 - 退出检测能覆盖的，加载后观察 + 心跳已经全覆盖
 - 每多一套记录状态同步机制，就多一类不同步 bug；这个项目已经在这上面栽过几次
 
-现在的原则是：**机制越少越好——记录只是本地观察的落地，任何时候都不拿它当服务端会话的结论。**
+现在的原则是：**机制越少越好——观察结果只活在内存里，任何时候都不拿它当服务端会话的结论。**
 
 ---
 
@@ -217,21 +217,29 @@ wrapper **不碰站点的业务逻辑**：
 
 ### 一个窗口、两个 WebView
 
-`tauri.conf.json` 的 `app.windows` 为空，Rust 用 `WindowBuilder` 创建窗口，再用 `Window::add_child` 添加本地 `toolbar` 与远程 `main` 两个 WebView。网站脚本通过 `WebviewBuilder::initialization_script` 注入，工具栏通过本地 HTML 加载。初始布局、全屏与缩放均由 Rust 控制，内容区域从工具栏底部开始。
+`tauri.conf.json` 的 `app.windows` 为空，Rust 用 `WindowBuilder` 创建窗口，再用 `Window::add_child` 添加本地 `toolbar` 与远程 `main` 两个 WebView。网站脚本通过 `WebviewBuilder::initialization_script` 注入，工具栏通过本地 HTML 加载。初始布局与缩放均由 Rust 控制，内容区域从工具栏底部开始。窗口首次启动最大化，之后由 `tauri-plugin-window-state` 在建窗后 `restore_state` 恢复上次的尺寸、位置与最大化状态（关窗时自动保存到 app 数据目录）。
 
 ### 注入脚本能被外部站点调用，靠的是 capability 的 remote 配置
 
 窗口加载的是 HTTPS 外部站点。capability 默认只对 `local` URL 生效，必须显式授权：
 
 ```json
-"remote": { "urls": ["https://*.fenbi.com", "http://127.0.0.1:8850"] },
+"remote": { "urls": ["https://*.fenbi.com", "https://fenbi.com"] },
 "webviews": ["main"],
 "local": false,
 "permissions": ["allow-wrapper-commands", "allow-toggle-toolbar"]
 ```
 
+`*.fenbi.com` 不匹配裸域，而 `new_window_allowed` 会放行 `https://fenbi.com/...`，
+所以裸域单独列一条，否则跳过去之后注入脚本的 invoke 会被 ACL 静默拒绝。
+
 自定义命令的权限在 `src-tauri/permissions/wrapper-commands.toml` 里声明，
 由 `tauri-build` 生成清单；新增应用命令还需在 `build.rs` 的 `AppManifest::commands` 注册。缺少 `remote` 会导致网站调用被 ACL 拒绝。
+
+**授权按构建模式分开**：`capabilities/*.json` 是 release 也带的；`capabilities/dev/` 里的
+回环地址授权（`http://127.0.0.1:8850`，对着本地假站点验证用）和 `allow-debug-logout`
+只在 debug 构建编进去——`build.rs` 按 `PROFILE` 选 `capabilities_path_pattern`，
+release 只读顶层目录。
 
 ### 站内跳转一律不纠正，目录页只作为冷启动入口
 
@@ -271,18 +279,16 @@ iframe 的导航也交给同一个回调，按 host 一刀切会误伤站内的�
 | `current_login_decision` | 始终 | 返回当前观察快照 `[seq, kind]`（`kind`：`pending` / `logged-in` / `logged-out`）；脚本据此决定弹不弹登录框 |
 | `debug_request_logout` | 仅 debug 构建 | 驱动站点自己的「退出登录」，验证登出检测链路 |
 
-就这两个。登录记录的**写入全部在 Rust 侧**（页面加载后的观察、心跳观察），
+就这两个。观察**全部在 Rust 侧**（页面加载后的观察、心跳观察），
 页面不上报登录态，只在被唤醒时重读 Rust 的当前结果。
 
-凭证读取用 `Webview::cookies()`（能读 HttpOnly，JS 读不到），在锁外进行；
-拿回结果后在锁内核对页面代号，过期结果不写记录、不改结论。
+凭证读取用 `Webview::cookies_for_url()`（能读 HttpOnly，JS 读不到；只取粉笔域），在锁外进行；
+拿回结果后在锁内核对页面代号，过期结果不改结论。
 唤醒页面只通过 `eval` 调 `window.__fenbiRefreshLoginDecision()`，**不带结论、不刷新页面**；
 页面被唤醒后自己重读当前结果，所以落在旧页面上的唤醒不会把上一代的结论带进新页面。
 
-`permissions/wrapper-commands.toml` 把两个命令都列进了 ACL，包括 debug 命令。
-这不构成 release 的暴露面：release 下 `debug_request_logout` 根本没注册，
-调用会直接被 Tauri 拒绝。真正的收窄（按构建模式隔离本地测试页授权）
-要等确认过真实跳转域名之后再做，见「待做」。
+`permissions/wrapper-commands.toml` 把 debug 命令单独声明成 `allow-debug-logout`，
+只被 `capabilities/dev/` 引用；release 下它既没注册也没授权。
 
 `init.js` 里那个 `__TARGET_URL__` 占位符**不带引号**：Rust 用
 `serde_json::to_string` 生成完整字符串字面量再替换进去，手工转义被彻底移除。
@@ -344,7 +350,7 @@ Rust 负责布局和受限命令；网站仍由 `init.js` 注入快捷键与裁�
 
 行为测试验证按钮与快捷键的动作一致性、收起态整条可点、状态读取失败后的重试及命令失败提示。
 
-偏好存于应用数据目录的 `toolbar-state`，由 Rust 管理，整页跳转不会改变它；状态版本号防止异步读取乱序回退布局。首次迁移默认展开，不读取原先粉笔域名下的 localStorage。网站凭证、登录记录及原 `main` WebView 标签保持不变，不启用无痕模式或更换数据目录。
+偏好存于应用数据目录的 `toolbar-state`，由 Rust 管理，整页跳转不会改变它；状态版本号防止异步读取乱序回退布局。首次迁移默认展开，不读取原先粉笔域名下的 localStorage。网站凭证及原 `main` WebView 标签保持不变，不启用无痕模式或更换数据目录。
 
 四个按钮**一律可点、不置灰**：Web 没有可靠的"能否前进"API，`history.length` 对 SPA 也不准，
 所以没得去时就是点了没反应。
@@ -436,9 +442,10 @@ CSS 选择器只能对着**真实页面**定，`pnpm check` 证明不了它们�
     ├── src/lib.rs          # 窗口、观察调度线程、命令注册
     ├── toolbar/            # 本地工具栏 HTML/CSS/JS，共享快捷键表
     ├── src/toolbar.rs      # 双 WebView 布局、工具栏命令与状态
-    ├── src/login_state.rs  # 纯逻辑：凭证三态、Started/Finished 观察调度、记录读写、路由分类
+    ├── src/login_state.rs  # 纯逻辑：凭证三态、Started/Finished 观察调度、路由分类
     ├── src/main.rs         # 入口
-    ├── capabilities/default.json   # 含 remote.urls 授权
+    ├── capabilities/default.json   # 含 remote.urls 授权（release 也带）
+    ├── capabilities/dev/           # 仅 debug 构建：回环地址与诊断命令授权
     └── tauri.conf.json
 ```
 
@@ -514,7 +521,7 @@ BEACON: open login modal :: logged-out
 `lib.rs` 的 `on_page_load`、`init.js` 的启动日志、`init-debug.js` 的导航追踪都按这个规则写。
 加新日志时请沿用。
 
-窗口默认全屏（`lib.rs` 的 `.fullscreen(true)`）；想改成固定尺寸就换成 `.inner_size()`。
+窗口首次启动最大化，之后记住上次尺寸；想固定尺寸就删掉 `lib.rs` 的 `restore_state` 并改 `.inner_size()`。
 
 ### 环境变量
 
@@ -596,16 +603,17 @@ Windows / Linux 上的等价行为**未验证**。
 
 ## 待做
 
-- **窗口状态记忆**：目前每次启动都强制全屏（`lib.rs` 的 `.fullscreen(true)`）。
-  如果希望记住上次的窗口尺寸/位置，需要接 `tauri-plugin-window-state`。
 - **更多 UI 裁剪**：目录页的推广位与无关入口已清过一轮（见上方「已验证的站点事实」）。
   练习页的噪音（侧边栏推荐、活动横幅等）还没动——往 `init.js` 对应的选择器常量里加，
   改完不用重编译；选择器要先按「UI 裁剪怎么复核」在真实页面上核对。
 - **缩小远程授权面**：`capabilities/default.json` 目前放行整个 `https://*.fenbi.com`。
   收窄之前要先确认真实登录、目录、练习跳转会用到的域名，不能凭猜测改，
-  否则会直接造成登录回归（见 [docs/improvement-proposal.md](docs/improvement-proposal.md) 第 4.2 节）。
-- **离线恢复闭环**：根目录 `index.html` 目前只是占位，没有接进构建产物，
-  也没有加载失败切换逻辑。
+  否则会直接造成登录回归。
+- **加载失败页**：断网冷启动时内容区是系统 WebView 的空白/错误页，没有包装层自己的提示。
+  工具栏的「刷新」按钮在这种状态下仍可用，所以恢复路径是存在的，只是不好看。
+  Tauri 目前没有稳定的加载失败回调，做的话要先确认三平台都能拿到失败信号。
+- **Windows 开发入口**：`pnpm dev` 是 Bash + `pkill`，Windows 上要 `cargo build` 后手动启动。
+- **三平台实机冒烟**：Windows / Linux 只验证过构建，启动、登录、重启恢复、退出都没有真机记录。
 
 ---
 
@@ -625,7 +633,7 @@ pnpm check    # 提交前必跑
 
 | 测试 | 位置 | 覆盖什么 |
 | --- | --- | --- |
-| Rust 单元测试 | `src-tauri/src/login_state.rs`、`lib.rs`、`toolbar.rs` | 凭证三态、`Started`/`Finished` 观察窗口、过期读取丢弃、记录格式、缓存写入决策、入口 URL、新窗口策略、工具栏来源检查与分区尺寸（纯函数，不需要窗口） |
+| Rust 单元测试 | `src-tauri/src/login_state.rs`、`lib.rs`、`toolbar.rs` | 凭证三态、`Started`/`Finished` 观察窗口、过期读取丢弃、入口 URL、新窗口策略、工具栏来源检查与分区尺寸（纯函数，不需要窗口） |
 | JS 行为测试 | `tests/js/` | 弹窗次数、序号去重与轮次、重试取消与预算、目录防循环、工具栏 IPC 动作、收起状态与异步乱序、五组快捷键、网站不注入工具栏 DOM |
 
 JS 用例按登录提示、工具栏、导航快捷键与页面裁剪拆在 `tests/js/`，测试地图与单独运行方式见 [tests/README.md](tests/README.md)。
@@ -695,6 +703,9 @@ open "src-tauri/target/release/bundle/macos/粉笔刷题.app"
 ```
 
 ### 想重新走一遍首次登录
+
+登录会话在系统 WebView 里，不在 app 数据目录，所以这个目录里只有工具栏偏好和窗口位置；
+想重新登录直接在页面里点「退出登录」。
 
 ```bash
 rm -rf ~/Library/Application\ Support/com.fenbi.wrapper

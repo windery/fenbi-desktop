@@ -2,10 +2,11 @@ name: check
 
 # PR 与普通分支推送的日常检查。
 # tag 推送不在这里 —— 发布走 release.yml，它自己会先校验版本号一致再构建。
+# pull_request 已覆盖所有 PR 分支；push 只盯默认分支，避免同一次推送跑两遍。
 on:
   pull_request:
   push:
-    branches: ["**"]
+    branches: ["main"]
 
 # PR 检查不需要任何写权限
 permissions:
@@ -67,10 +68,11 @@ jobs:
       - name: 检查与测试
         run: pnpm check
 
-  # 只做**编译**检查，覆盖 Linux 之外的平台。
-  # 这不等于 UI 冒烟测试：真机运行验证见 CONTRIBUTING.md「平台支持」。
+  # 编译 + 单元测试，覆盖 Linux 之外的平台。Rust 测试全是纯函数，不开窗口，
+  # 所以在这里顺手跑一遍成本很低。这不等于 UI 冒烟测试：真机运行验证见
+  # CONTRIBUTING.md「平台支持」。
   compile:
-    name: 编译检查（${{ matrix.label }}）
+    name: 编译与测试（${{ matrix.label }}）
     runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -104,5 +106,5 @@ jobs:
       - name: 准备工具栏资源
         run: pnpm build
 
-      - name: cargo check
-        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
+      - name: cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml

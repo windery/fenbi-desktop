@@ -10,7 +10,8 @@
 //
 // ## 它确实会读 cookie —— 但只读名字
 //
-// 为了判断"还要不要弹登录框"，这里用 `Webview::cookies()` 读本地凭证信号。
+// 为了判断"还要不要弹登录框"，这里用 `Webview::cookies_for_url()` 读本地凭证信号，
+// 只看粉笔域下的 cookie 名字。
 // 读到凭证**不等于**登录有效：那只是一个本地观测，服务端可能早就拒绝了它。
 // 所以代码和文案里都不写"已验证登录"，只写"观测到凭证"。
 // 判定的分层见 `login_state.rs` 的模块文档。
@@ -35,6 +36,7 @@ use tauri::webview::PageLoadEvent;
 use tauri::{
     LogicalPosition, LogicalSize, Manager, Webview, WebviewBuilder, WebviewUrl, WindowBuilder,
 };
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 /// 刷题入口页 = 题库目录页。
 ///
@@ -81,11 +83,14 @@ fn parse_checked_url(raw: &str, what: &str) -> Result<tauri::Url, Box<dyn std::e
 
 /// 读一次本地凭证信号。
 ///
+/// 只取粉笔域（`site` 是跳转目标 URL）下的 cookie：站内第三方 iframe 若恰好也
+/// 种了同名 cookie，不能把它当成粉笔凭证。
+///
 /// 读取失败映射成 [`Credentials::Unknown`]，**不是** `Absent`：一次读取故障
-/// 不等于用户登出，把它当登出会写坏记录并弹出本不该弹的登录框。
-fn read_credentials(win: &Webview) -> Credentials {
+/// 不等于用户登出，把它当登出会弹出本不该弹的登录框。
+fn read_credentials(win: &Webview, site: &tauri::Url) -> Credentials {
     let names = win
-        .cookies()
+        .cookies_for_url(site.clone())
         .map(|cookies| {
             cookies
                 .iter()
@@ -94,47 +99,6 @@ fn read_credentials(win: &Webview) -> Credentials {
         })
         .map_err(|_| ());
     login_state::credentials_from(names)
-}
-
-/* ------------------------------------------------------------------ *
- * 登录状态记录
- *
- * 「上次观测到的是否已登录」记在 app 数据目录下的小文件里。
- *
- * 它不参与判定：启动时读出来只作为缓存镜像的初值，观察结果与它相同时就
- * 不必再写一遍。内容不可读按"没有记录"处理，判定始终来自本轮观察。
- *
- * 冷启动时机由观察窗口处理：站点要用 persistent cookie 才能恢复出 sess，
- * 这段恢复需要时间，查早了会误判未登录。
- * ------------------------------------------------------------------ */
-
-fn login_flag_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    app.path()
-        .app_data_dir()
-        .ok()
-        .map(|d| d.join("login-state"))
-}
-
-fn read_login_flag(app: &tauri::AppHandle) -> Option<bool> {
-    let path = login_flag_path(app)?;
-    let text = std::fs::read_to_string(path).ok()?;
-    login_state::parse_login_flag(&text)
-}
-
-fn write_login_flag(app: &tauri::AppHandle, logged_in: bool) {
-    let Some(path) = login_flag_path(app) else {
-        return;
-    };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Err(e) = std::fs::write(&path, login_state::format_login_flag(logged_in)) {
-        if debug_enabled() {
-            println!("[fenbi-wrapper] write login flag failed: {e}");
-        }
-    } else if debug_enabled() {
-        println!("[fenbi-wrapper] login flag = {logged_in}");
-    }
 }
 
 /// 注入脚本重读当前判定。返回 `[seq, "pending" | "logged-in" | "logged-out"]`。
@@ -198,10 +162,10 @@ fn window_destroyed(event: &tauri::WindowEvent) -> bool {
 /// 「退出登录」）。等待**不是盲睡**：页面加载事件会提前唤醒它。
 ///
 /// 线程只做三件事：问共享状态下一步、在锁外读一次 cookie、把结果交回去。
-/// 判定与缓存写入由 [`WatchShared`] 在锁内线性化；页面的 eval 永远在锁外。
-fn spawn_login_watch(win: Webview, shared: Arc<WatchShared>) {
+/// 判定由 [`WatchShared`] 在锁内线性化；页面的 eval 永远在锁外。
+/// 观察结果只活在内存里，不落盘（原因见 CONTRIBUTING.md「为什么没有登录记录文件」）。
+fn spawn_login_watch(win: Webview, site: tauri::Url, shared: Arc<WatchShared>) {
     std::thread::spawn(move || {
-        let app = win.app_handle().clone();
         if debug_enabled() {
             println!("[fenbi-wrapper] watch start");
         }
@@ -220,13 +184,11 @@ fn spawn_login_watch(win: Webview, shared: Arc<WatchShared>) {
                 } => shared.wait(version, timeout_ms),
                 WatchPoll::Read { token } => {
                     // cookie 读取在锁外：可能很慢，期间页面还可能换一代。
-                    let creds = read_credentials(&win);
+                    let creds = read_credentials(&win, &site);
                     if debug_enabled() {
                         println!("[fenbi-wrapper] read token={token} creds={creds:?}");
                     }
-                    let notify = shared.finish_read(token, creds, shared.now_ms(), |present| {
-                        write_login_flag(&app, present);
-                    });
+                    let notify = shared.finish_read(token, creds, shared.now_ms());
                     // eval 在锁外；只提醒页面重读 snapshot，不带序号也不带判定。
                     if notify {
                         refresh_page_decision(&win);
@@ -339,12 +301,19 @@ fn build_window(
 
     // 页面加载事件（Started/Finished）直接写进共享状态，watcher 用 Condvar 等它。
     app.manage(toolbar::ToolbarState::new(app, parsed_target.as_str()));
+    // 窗口尺寸：有上次的记录就由 tauri-plugin-window-state 在建窗时恢复
+    // （尺寸 / 位置 / 是否最大化）；没有记录（首次启动）就最大化。
+    // 不用 `.fullscreen(true)`：Windows / Linux 上那是无边框盖住任务栏，
+    // 没有最小化和关闭按钮，和 macOS 的"全屏 Space"完全不是一回事。
+    let first_launch = !has_saved_window_state(app);
     let window = WindowBuilder::new(app, WINDOW_LABEL)
         .title("粉笔刷题")
-        .fullscreen(true)
         .inner_size(1180.0, 880.0)
         .min_inner_size(900.0, 640.0)
         .build()?;
+    if first_launch {
+        window.maximize()?;
+    }
     // Visible uses FullSizeContentView on macOS and clips child views under the titlebar.
     #[cfg(target_os = "macos")]
     window.set_title_bar_style(tauri::TitleBarStyle::Transparent)?;
@@ -420,12 +389,10 @@ fn build_window(
             if matches!(
                 event,
                 tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
-            ) {
-                if let Some(window) = handle.get_window(WINDOW_LABEL) {
-                    if let Err(e) = toolbar::layout(&window) {
-                        eprintln!("[fenbi-wrapper] layout: {e}");
-                    }
-                }
+            ) && let Some(window) = handle.get_window(WINDOW_LABEL)
+                && let Err(e) = toolbar::layout(&window)
+            {
+                eprintln!("[fenbi-wrapper] layout: {e}");
             }
             if window_destroyed(event) {
                 shared.stop();
@@ -434,27 +401,40 @@ fn build_window(
     }
 
     // 首次观察 + 常驻心跳
-    spawn_login_watch(win.clone(), shared);
+    spawn_login_watch(win.clone(), parsed_target.clone(), shared);
 
     // 诊断：FENBI_DEBUG_DROP_AFTER=6000 会在 6 秒后驱动站点自己的退出登录，
     // 用来自动验证「退出登录 -> 弹登录框」这条路径。仅 debug 构建。
     #[cfg(debug_assertions)]
-    if let Ok(ms) = std::env::var("FENBI_DEBUG_DROP_AFTER") {
-        if let Ok(ms) = ms.parse::<u64>() {
-            let w = win.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(ms));
-                println!("[fenbi-wrapper] DEBUG: dropping session after {ms}ms");
-                let _ = w.eval(
-                    "window.__fenbiDebugRequestLogout && window.__fenbiDebugRequestLogout();",
-                );
-            });
-        }
+    if let Ok(ms) = std::env::var("FENBI_DEBUG_DROP_AFTER")
+        && let Ok(ms) = ms.parse::<u64>()
+    {
+        let w = win.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            println!("[fenbi-wrapper] DEBUG: dropping session after {ms}ms");
+            let _ =
+                w.eval("window.__fenbiDebugRequestLogout && window.__fenbiDebugRequestLogout();");
+        });
     }
 
     let _ = win.set_focus();
     Ok(())
 }
+
+/// 窗口状态插件是否已经有这扇窗口的记录。没有就是首次启动，窗口该最大化。
+fn has_saved_window_state(app: &tauri::AppHandle) -> bool {
+    app.path()
+        .app_config_dir()
+        .map(|dir| dir.join(app.filename()).is_file())
+        .unwrap_or(false)
+}
+
+/// 窗口状态里只记尺寸、位置和是否最大化。不记全屏 / 可见 / 边框：
+/// 这些由代码决定，不该被上一次运行的状态覆盖。
+const WINDOW_STATE_FLAGS: StateFlags = StateFlags::SIZE
+    .union(StateFlags::POSITION)
+    .union(StateFlags::MAXIMIZED);
 
 /// 心跳间隔。`FENBI_DEBUG_HEARTBEAT_MS` 仅用于测试时收缩间隔。
 fn heartbeat_interval_ms() -> u64 {
@@ -477,6 +457,11 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(WINDOW_STATE_FLAGS)
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             current_login_decision,
             toolbar::toolbar_action,
@@ -487,10 +472,7 @@ pub fn run() {
         ])
         .setup(move |app| {
             // 共享状态先于窗口注册：注入脚本随时可能 invoke 重读判定。
-            let shared = Arc::new(WatchShared::new(
-                read_login_flag(app.handle()),
-                heartbeat_interval_ms(),
-            ));
+            let shared = Arc::new(WatchShared::new(heartbeat_interval_ms()));
             app.manage(Arc::clone(&shared));
             build_window(app.handle(), &target, &parsed_target, parsed_entry, shared)?;
             Ok(())
@@ -527,23 +509,17 @@ mod tests {
     }
 
     #[test]
-    fn started_clears_snapshot_then_wakes_the_page_without_reading_or_writing() {
+    fn started_clears_snapshot_then_wakes_the_page_without_reading() {
         // Started 必须先把快照清成 pending，再在锁外通知页面重读；通知回调里
         // 看到的快照就是旧文档即将读到的值。
-        let shared = WatchShared::new(None, 60_000);
+        let shared = WatchShared::new(60_000);
         shared.on_started();
         shared.on_finished(0);
         let token = match shared.next_step(1_000_000) {
             WatchPoll::Read { token } => token,
             other => panic!("预期读取凭证，得到 {other:?}"),
         };
-        let mut writes = Vec::new();
-        assert!(
-            shared.finish_read(token, Credentials::Present, 1_000_000, |p| {
-                writes.push(p)
-            })
-        );
-        writes.clear();
+        assert!(shared.finish_read(token, Credentials::Present, 1_000_000));
         assert_eq!(
             shared.snapshot().1,
             login_state::PageDecision::LoggedIn,
@@ -565,8 +541,6 @@ mod tests {
             shared.next_step(1_000_000),
             WatchPoll::Wait { .. }
         ));
-        // 不写缓存：Started 只更新内存快照
-        assert!(writes.is_empty());
     }
 
     #[test]

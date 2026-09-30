@@ -2,7 +2,10 @@
 [[permission]]
 identifier = "allow-wrapper-commands"
 description = "允许注入脚本重读当前登录判定（只读共享快照）。"
-commands.allow = [
-    "current_login_decision",
-    "debug_request_logout",
-]
+commands.allow = ["current_login_decision"]
+
+# 仅 debug 构建注册的诊断命令；只被 capabilities/dev/ 引用，release 不授权。
+[[permission]]
+identifier = "allow-debug-logout"
+description = "仅诊断用：驱动站点自己的「退出登录」，验证登出检测链路。"
+commands.allow = ["debug_request_logout"]

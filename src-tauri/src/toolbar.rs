@@ -81,10 +81,10 @@ pub async fn toggle_toolbar(webview: Webview, app: tauri::AppHandle) -> Result<(
                 eprintln!("[fenbi-wrapper] toolbar state save: {e}");
             }
         }
-        if let Some(window) = handle.get_window(super::WINDOW_LABEL) {
-            if let Err(e) = layout(&window) {
-                eprintln!("[fenbi-wrapper] toolbar layout: {e}");
-            }
+        if let Some(window) = handle.get_window(super::WINDOW_LABEL)
+            && let Err(e) = layout(&window)
+        {
+            eprintln!("[fenbi-wrapper] toolbar layout: {e}");
         }
         if let Some(view) = handle.get_webview(TOOLBAR) {
             let _ = view.eval("window.__fenbiRefreshToolbar && window.__fenbiRefreshToolbar();");
