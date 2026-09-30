@@ -1,7 +1,7 @@
 {
   "name": "fenbi-desktop",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "粉笔题库桌面版（macOS / Windows / Linux）",
   "type": "module",
   "packageManager": "pnpm@11.22.0",

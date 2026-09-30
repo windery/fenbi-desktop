@@ -1,6 +1,6 @@
 [package]
 name = "fenbi-desktop"
-version = "0.1.1"
+version = "0.1.2"
 description = "粉笔刷题桌面 wrapper（macOS / Windows / Linux）"
 authors = ["huanglang"]
 edition = "2024"

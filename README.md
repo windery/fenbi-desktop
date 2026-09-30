@@ -137,6 +137,6 @@ pnpm check    # 提交前跑：语法 + 格式 + 静态检查 + 测试
 打 tag 触发 GitHub Actions 自动构建三平台并创建 Release：
 
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.2
+git push origin v0.1.2
 ```

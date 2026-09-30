@@ -43,8 +43,8 @@ CI 里的 apt 依赖列表见 `.github/workflows/release.yml`。
 ### 打 tag 触发
 
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
 GitHub Actions 会并行构建四份产物（`.github/workflows/release.yml`）：
