@@ -25,6 +25,11 @@ serde_json = "1"
 # 记住窗口尺寸/位置/最大化状态。2.5 起要求 tauri 2.12，所以同样钉死。
 tauri-plugin-window-state = "=2.4.0"
 
+# Linux 上 tauri-runtime-wry 把子 WebView pack 进窗口的 GtkBox，`set_bounds` 是空操作，
+# 布局要直接改 GTK packing（见 toolbar.rs 的 linux 版 layout）。版本与 tauri 用的一致。
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

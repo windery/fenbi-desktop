@@ -164,7 +164,7 @@ jobs:
             未登录会弹登录框，登录一次后通常不用再登（会话本身由粉笔网站控制）。
             快捷键 `Cmd/Ctrl + R` 刷新页面。
 
-            只有 macOS 做过真机运行验证，Windows / Linux 目前仅验证过构建。
+            macOS 做过真机运行验证，Linux 在虚拟显示下验证过启动、登录提示与工具栏；Windows 目前仅验证过构建。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

@@ -1,6 +1,6 @@
 //! App-owned toolbar and content occupy separate child WebViews.
 use std::sync::Mutex;
-use tauri::{LogicalPosition, LogicalSize, Manager, Webview, Window};
+use tauri::{Manager, Webview, Window};
 
 pub const CONTENT: &str = "main"; // Preserve the existing webview identity and data store.
 pub const TOOLBAR: &str = "toolbar";
@@ -136,7 +136,10 @@ fn heights(total: f64, collapsed: bool) -> (f64, f64) {
     (bar, (total - bar).max(0.0))
 }
 
+/// macOS / Windows：两个子 WebView 是绝对定位的，直接给坐标和尺寸。
+#[cfg(not(target_os = "linux"))]
 pub fn layout(window: &Window) -> tauri::Result<()> {
+    use tauri::{LogicalPosition, LogicalSize};
     let state = window.state::<ToolbarState>();
     let collapsed = state.view.lock().unwrap().1;
     let size = window
@@ -148,6 +151,36 @@ pub fn layout(window: &Window) -> tauri::Result<()> {
             view.set_bounds(tauri::Rect {
                 position: LogicalPosition::new(0.0, y).into(),
                 size: LogicalSize::new(size.width, h).into(),
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Linux：tauri-runtime-wry 把子 WebView `pack_start(expand=true)` 进窗口的 GtkBox，
+/// `set_bounds` 对 GtkBox 里的子控件是空操作，结果两个 WebView 各占一半窗口高度
+/// （实测：700 高的窗口里内容区 innerHeight=350，上半截是工具栏页面的空白）。
+/// 这里直接改 GTK packing：工具栏不扩展、固定高度；内容区 expand 吃掉剩余空间。
+/// 宽度由 GtkBox 自己填满，不用管。
+#[cfg(target_os = "linux")]
+pub fn layout(window: &Window) -> tauri::Result<()> {
+    let state = window.state::<ToolbarState>();
+    let collapsed = state.view.lock().unwrap().1;
+    let size = window
+        .inner_size()?
+        .to_logical::<f64>(window.scale_factor()?);
+    let (height, _) = heights(size.height, collapsed);
+    for (label, expand, request) in [(TOOLBAR, false, height as i32), (CONTENT, true, -1)] {
+        if let Some(view) = window.app_handle().get_webview(label) {
+            // 闭包在主线程执行；gtk 对象不是 Send，所以从控件自己往上找父容器，
+            // 而不是在这里拿 window.default_vbox() 传进去。
+            view.with_webview(move |platform| {
+                use gtk::prelude::*;
+                let widget = platform.inner();
+                widget.set_size_request(-1, request);
+                if let Some(vbox) = widget.parent().and_then(|p| p.downcast::<gtk::Box>().ok()) {
+                    vbox.set_child_packing(&widget, expand, expand, 0, gtk::PackType::Start);
+                }
             })?;
         }
     }

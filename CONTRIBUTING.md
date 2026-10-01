@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | macOS（ARM64 / x64） | CI 出包 | 主要开发平台，日常在用 |
 | Windows x64 | CI 出包 | **未验证**（无真机记录） |
-| Linux x64 | CI 出包 | **未验证**（无真机记录） |
+| Linux x64 | CI 出包 | 2026-10-01 在 Xvfb 虚拟显示（WebKitGTK 2.52、openbox）下跑过 debug 构建，见文末验收记录 |
 
 代码里没有平台硬编码：
 
@@ -20,7 +20,8 @@
 | --- | --- |
 | 快捷键 | mac 用 `metaKey`、Windows/Linux 用 `altKey`/`ctrlKey`，见「工具横栏与快捷键」 |
 | 凭证读取 | `Webview::cookies_for_url()`，三平台行为一致 |
-| 窗口尺寸 | 首次启动最大化（`.maximized(true)`），之后由 `tauri-plugin-window-state` 恢复上次的尺寸与位置 |
+| 窗口尺寸 | 首次启动最大化，之后由 `tauri-plugin-window-state` 恢复上次的尺寸与位置 |
+| 双 WebView 布局 | macOS / Windows 用 `set_bounds` 绝对定位；**Linux 另有一套**：tauri-runtime-wry 把子 WebView pack 进 GtkBox，`set_bounds` 是空操作，`toolbar.rs` 的 linux 版 `layout` 直接改 GTK packing（工具栏固定高、内容区 expand） |
 
 开发入口 `pnpm dev` 目前是 **Unix-only**（Bash + `pkill`，可执行文件路径也没带 `.exe`），
 所以 Windows 上开发要用 `cargo build` + 手动启动。
@@ -735,6 +736,27 @@ const PRACTICE_URL: &str = "https://www.fenbi.com/spa/tiku/guide/catalog";
 
 修改本地工具栏后用 `pnpm dev` 重新复制资源并编译；`pnpm check` 检查真实脚本和 Rust。模拟页面通过不能替代真实登录、做题和报告页验证。
 
+### 没有显示器也能跑：Xvfb 验收
+
+Linux 容器里可以这样起一个虚拟显示跑 debug 构建，截图和驱动都用标准 X11 工具：
+
+```bash
+sudo apt-get install -y xvfb openbox xdotool wmctrl imagemagick fonts-noto-cjk
+Xvfb :99 -screen 0 1600x1000x24 & DISPLAY=:99 openbox &   # 要有窗口管理器，maximize 才有意义
+export DISPLAY=:99 FENBI_DEBUG=1 XDG_CONFIG_HOME=/tmp/fb/config XDG_DATA_HOME=/tmp/fb/data
+pnpm build && cargo build --manifest-path src-tauri/Cargo.toml && src-tauri/target/debug/fenbi-desktop &
+wmctrl -lG                      # 窗口几何；xprop -id <id> _NET_WM_STATE 看是否最大化
+xdotool key ctrl+shift+b        # 快捷键要走 XTEST（不要加 --window，GTK 会忽略 XSendEvent）
+import -window root shot.png    # 截图
+wmctrl -i -c <id>               # 正常关闭，窗口状态插件只在退出时落盘
+```
+
+隔离的 `XDG_*` 目录保证不碰真实数据。`pkill` 时用 `-x fenbi-desktop`，别用路径匹配。
+想知道内容区 WebView 的真实尺寸，往 `target/debug/init.js`（debug 构建从磁盘读）临时追加一段
+把 `innerWidth/innerHeight` 发到 8799 beacon 的代码即可，不用改源码。
+
 2026-09-23 **旧版独立工具栏迁移验收**：`pnpm check` 通过（45 项 JS、30 项 Rust，含 fmt/clippy）。当时的 macOS 原生开发版确认已登录冷启动、刷新后保持会话、页面裁剪、独立工具栏收起展开、网站焦点下 Cmd+Shift+B、全屏退出及重启后收起偏好恢复；没有 URL/加载状态调试行。这条记录不代表本次 36px / 24px 工具栏重做已在真实 WebView 中验证。当时未执行登出、扫码、答题或报告操作，Windows/Linux 也尚未实机验证。
 
 2026-09-29 **36px / 24px 工具栏重做验收**：`pnpm check` 通过（51 项 JS、30 项 Rust，含 fmt/clippy），界面静态质量检查未报问题。macOS 未签名调试版确认全屏与窗口缩放时两个 WebView 无重叠、两种工具栏高度正常、重启后收起偏好恢复、展开后焦点回到网站。从一项已有练习分别用工具栏按钮和网站侧快捷键回题库，再返回，均回到原练习地址；未选答案或交卷。状态读取失败、命令失败和收起条空白区域点击由 JS 行为测试覆盖。Windows/Linux 尚未实机验证。
+
+2026-10-01 **v0.1.2 Linux 验收（Xvfb 1600x1000，WebKitGTK 2.52.6，openbox）**：`pnpm check` 通过（51 项 JS、28 项 Rust，含 fmt/clippy）。debug 构建确认：首次启动最大化（`_NET_WM_STATE_MAXIMIZED_*`），正常关闭后 `.window-state.json` 落盘，取消最大化并改成 1000x700 后重启恢复同一几何；目录页加载、未登录判定 `logged-out`、站点登录框被点出且只点一次；Ctrl+Shift+B 收起/展开、点收起条右侧「展开」、Ctrl+R 刷新、工具栏「回题库」按钮均生效；页面裁剪（顶栏 tab、活动横幅、会员入口）生效。**同时发现并修复**：Linux 上内容区只占窗口下半（v0.1.1 同样如此，是 tauri-runtime-wry 在 GTK 下的 `set_bounds` 空操作），见「平台支持」表的「双 WebView 布局」。未做：登录、答题、报告页；Windows 仍只验证过构建。
