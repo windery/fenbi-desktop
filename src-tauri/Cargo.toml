@@ -3,6 +3,7 @@ name = "fenbi-desktop"
 version = "0.1.2"
 description = "粉笔刷题桌面 wrapper（macOS / Windows / Linux）"
 authors = ["huanglang"]
+license = "MIT"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.2",
   "description": "粉笔题库桌面版（macOS / Windows / Linux）",
+  "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@11.22.0",
   "scripts": {
