@@ -48,7 +48,7 @@
 | --- | --- | --- |
 | macOS（Apple 芯片） | `fenbi-desktop_<版本>_darwin_aarch64.dmg` | macOS 10.15+ |
 | macOS（Intel） | `fenbi-desktop_<版本>_darwin_x64.dmg` | macOS 10.15+ |
-| Windows x64 | `fenbi-desktop_<版本>_windows_x64-setup.exe` | WebView2（安装时自动准备） |
+| Windows x64 | `fenbi-desktop_<版本>_windows_x64-setup.exe` | WebView2 Runtime（Windows 11 自带，缺少时安装程序自动下载） |
 | Linux x64 | `.AppImage` / `.deb` / `.rpm` | WebKitGTK 4.1 |
 
 > [!IMPORTANT]
@@ -67,7 +67,9 @@
 
 ### Windows
 
-双击 `.exe` 安装。SmartScreen 提示时，点**「更多信息」→「仍要运行」**。首次运行会自动准备 WebView2 运行时。
+双击 `.exe` 安装。SmartScreen 提示时，点**「更多信息」→「仍要运行」**。
+
+程序依赖 WebView2 Runtime（微软提供的网页显示组件）。Windows 11 和较新的 Windows 10 已经自带；没有的话，安装程序会自动联网下载，这一步需要网络。
 
 ### Linux
 
@@ -211,7 +213,7 @@ pnpm dev
 | 命令 | 用途 |
 | --- | --- |
 | `pnpm dev` | debug 增量编译并启动，约 3 秒；仅支持 macOS / Linux，Windows 上的做法见 [CONTRIBUTING.md](CONTRIBUTING.md) |
-| `pnpm check` | 提交前必跑：JS 语法、JS 行为测试、`cargo fmt`、`cargo clippy -D warnings`、Rust 单元测试 |
+| `pnpm check` | commit 前必跑：JS 语法、JS 行为测试、`cargo fmt`、`cargo clippy -D warnings`、Rust 单元测试 |
 | `pnpm bundle` | release 构建并打安装包（LTO，约 2 分钟），产物在 `src-tauri/target/release/bundle/` |
 
 `pnpm build` 只把工具横栏的静态资源复制到 `dist`，不验证应用。
@@ -242,7 +244,7 @@ debug 构建启动时从磁盘读取注入脚本，所以改 `src-tauri/init.js`
 
 - 不让客户端判断或驱动站点业务，见[设计边界](#设计边界)
 - 改登录时序、路由判断或凭证读取：先写能复现问题的测试，再改实现
-- 提交前 `pnpm check` 必须通过
+- commit 前 `pnpm check` 必须通过
 - 改 UI 裁剪的选择器，要对照真实页面核对；CSS 测试只检查注入的规则文本
 
 目前最需要帮助的方向：
@@ -251,7 +253,7 @@ debug 构建启动时从磁盘读取注入脚本，所以改 `src-tauri/init.js`
 - Linux 真机验证
 - 练习页的进一步 UI 裁剪
 
-版本由维护者打 tag 发布，GitHub Actions 自动构建四个平台产物并创建草稿 Release，流程见 CONTRIBUTING.md 的「发布」一节。
+版本由维护者打 tag 发布，GitHub Actions 自动构建四个平台产物并创建 draft Release，流程见 CONTRIBUTING.md 的「发布」一节。
 
 ## 常见问题
 

@@ -31,8 +31,8 @@ Windows 上有两个已知坑：
 - Tauri 文档指出**同步命令里读 cookie 会死锁**（[wry#583](https://github.com/tauri-apps/wry/issues/583)）。
   本项目不在命令里读 cookie——`current_login_decision` 只读内存快照，
   凭证读取跑在独立线程里，所以不受影响。
-- 首次运行需要 WebView2 运行时。已配置 `webviewInstallMode: downloadBootstrapper`，
-  安装包会自动下载引导器。
+- 需要 WebView2 Runtime。已配置 `webviewInstallMode: downloadBootstrapper`：
+  安装时若系统缺少它，安装包会自动下载微软的 bootstrapper 来装。
 
 Linux 依赖系统 WebKitGTK，`tauri.conf.json` 里已声明 deb 的 depends。
 CI 里的 apt 依赖列表见 `.github/workflows/release.yml`。
