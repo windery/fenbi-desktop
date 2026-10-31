@@ -81,8 +81,11 @@ tag 名与它们保持一致（`v0.1.1` ↔ `0.1.1`）。改版本号后要重�
 
 ### 签名
 
-**当前完全未签名**，用户首次打开会被 Gatekeeper / SmartScreen 拦，README 里
-写了绕过步骤。要启用签名的话接上 secrets，tauri-action 会自动使用：
+**当前没有正式签名**。macOS 只做了 ad-hoc 整包签名（`tauri.conf.json` 的
+`bundle.macOS.signingIdentity` 为 `"-"`），免费、不带开发者身份，作用是让系统提示
+从「已损坏」变成可点「仍要打开」的「无法验证开发者」。Windows 完全未签名。
+用户首次打开会被 Gatekeeper / SmartScreen 拦，README 里写了放行步骤。
+要启用正式签名的话接上 secrets，tauri-action 会自动使用：
 
 - macOS：`APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、
   `APPLE_SIGNING_IDENTITY`、`APPLE_ID`、`APPLE_PASSWORD`、`APPLE_TEAM_ID`
