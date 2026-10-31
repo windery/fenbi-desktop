@@ -40,4 +40,18 @@
 
 - 使用说明与安装：[README.md](README.md)
 - 实现细节、站点事实、排查手册、发布流程：[CONTRIBUTING.md](CONTRIBUTING.md)
-- 待办与优先级：[CONTRIBUTING.md](CONTRIBUTING.md) 的「待做」一节
+- 待办与优先级：GitHub Issues（`gh issue list`），操作约定见 `docs/agents/issue-tracker.md`
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in this repo's GitHub Issues, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical triage roles, label strings equal to their names. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.

@@ -607,17 +607,12 @@ Windows / Linux 上的等价行为**未验证**。
 
 ## 待做
 
-- **更多 UI 裁剪**：目录页的推广位与无关入口已清过一轮（见上方「已验证的站点事实」）。
-  练习页的噪音（侧边栏推荐、活动横幅等）还没动——往 `init.js` 对应的选择器常量里加，
-  改完不用重编译；选择器要先按「UI 裁剪怎么复核」在真实页面上核对。
-- **缩小远程授权面**：`capabilities/default.json` 目前放行整个 `https://*.fenbi.com`。
-  收窄之前要先确认真实登录、目录、练习跳转会用到的域名，不能凭猜测改，
-  否则会直接造成登录回归。
-- **加载失败页**：断网冷启动时内容区是系统 WebView 的空白/错误页，没有包装层自己的提示。
-  工具栏的「刷新」按钮在这种状态下仍可用，所以恢复路径是存在的，只是不好看。
-  Tauri 目前没有稳定的加载失败回调，做的话要先确认三平台都能拿到失败信号。
-- **Windows 开发入口**：`pnpm dev` 是 Bash + `pkill`，Windows 上要 `cargo build` 后手动启动。
-- **三平台实机冒烟**：Windows / Linux 只验证过构建，启动、登录、重启恢复、退出都没有真机记录。
+待做项以 GitHub Issues 为准，本文件不再维护列表：
+
+<https://github.com/windery/fenbi-desktop/issues>
+
+按状态筛：`gh issue list --label ready-for-agent`（可交给 agent）、`--label ready-for-human`（需要真机或人判断）。
+issue 跟踪器的操作约定见 `docs/agents/issue-tracker.md`。
 
 ---
 
