@@ -11,7 +11,7 @@
 | 平台 | 构建 | 真机运行验证 |
 | --- | --- | --- |
 | macOS（ARM64 / x64） | CI 出包 | 主要开发平台，日常在用 |
-| Windows x64 | CI 出包 | **未验证**（无真机记录） |
+| Windows x64 | CI 出包 | Windows 11 ARM64 虚拟机：启动、窗口摆放与恢复（#8 #9）、单实例（#7）、断网页、`pnpm dev` 清理旧实例；**登录、刷题、x64 真机未验证** |
 | Linux x64 | CI 出包 | 2026-10-01 在 Xvfb 虚拟显示（WebKitGTK 2.52、openbox）下跑过 debug 构建，见文末验收记录 |
 
 代码里没有平台硬编码：
@@ -50,8 +50,8 @@ CI 里的 apt 依赖列表见 `.github/workflows/release.yml`。
 ### 打 tag 触发
 
 ```bash
-git tag v0.1.2
-git push origin v0.1.2
+git tag v<版本>          # 例如 v0.1.3，与三处版本号一致（见下文）
+git push origin v<版本>
 ```
 
 GitHub Actions 会并行构建四份产物（`.github/workflows/release.yml`）：
@@ -702,7 +702,7 @@ pnpm bundle
 产物：
 
 - `src-tauri/target/release/bundle/macos/粉笔刷题.app`
-- `src-tauri/target/release/bundle/dmg/粉笔刷题_0.1.1_aarch64.dmg`
+- `src-tauri/target/release/bundle/dmg/粉笔刷题_<版本>_aarch64.dmg`
 
 打包完可以直接启动已构建的 app 来测，不必重新打 DMG：
 

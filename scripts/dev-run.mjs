@@ -37,10 +37,11 @@ await sleep(500);
 
 console.log("==> 增量编译（会顺带同步 init.js）");
 await import("./build-ui.mjs");
-// Windows 上 cargo 可能是 .cmd 包装（如 rustup 代理以外的安装方式），走 shell 才能找到
-const build = spawnSync("cargo", ["build", "--manifest-path", "src-tauri/Cargo.toml"], {
+// 走 shell 才能在 Windows 上找到 .cmd 形式的 cargo；整条命令写成一个字符串，
+// 避免 shell 模式下传参数数组（Node 24 起报 DEP0190 弃用警告）
+const build = spawnSync("cargo build --manifest-path src-tauri/Cargo.toml", {
   stdio: "inherit",
-  shell: isWindows,
+  shell: true,
 });
 if (build.status !== 0) {
   console.error("==> 编译失败，未启动");

@@ -88,7 +88,7 @@ sudo rpm -i fenbi-desktop_*.rpm
 | --- | --- | --- |
 | macOS（ARM64 / x64） | ✅ | ✅ 主要开发平台，日常使用 |
 | Linux x64 | ✅ | ⚠️ 在 Xvfb 虚拟显示下验证过启动、登录提示、工具栏和窗口恢复 |
-| Windows x64 | ✅ | ❌ 尚未实机验证 |
+| Windows x64 | ✅ | ⚠️ 在 Windows 11 ARM64 虚拟机里验证过启动、窗口摆放与恢复、单实例、断网提示；登录与刷题未验证 |
 
 在 Windows 或 Linux 上遇到问题，欢迎[提 issue](https://github.com/windery/fenbi-desktop/issues)。
 
