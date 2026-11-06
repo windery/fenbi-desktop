@@ -25,6 +25,8 @@ tauri = { version = "=2.11.5", features = ["unstable"] }
 serde_json = "1"
 # 记住窗口尺寸/位置/最大化状态。2.5 起要求 tauri 2.12，所以同样钉死。
 tauri-plugin-window-state = "=2.4.0"
+# 第二次启动时把已有窗口叫到前台，不多开（#7）。2.5 起要求 tauri 2.12，同样钉死。
+tauri-plugin-single-instance = "=2.4.5"
 
 # Linux 上 tauri-runtime-wry 把子 WebView pack 进窗口的 GtkBox，`set_bounds` 是空操作，
 # 布局要直接改 GTK packing（见 toolbar.rs 的 linux 版 layout）。版本与 tauri 用的一致。

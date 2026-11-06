@@ -29,12 +29,14 @@
 
 mod login_state;
 mod toolbar;
+mod window_fit;
 
 use login_state::{Credentials, WatchPoll, WatchShared};
 use std::sync::Arc;
 use tauri::webview::PageLoadEvent;
 use tauri::{
-    LogicalPosition, LogicalSize, Manager, Webview, WebviewBuilder, WebviewUrl, WindowBuilder,
+    LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Webview, WebviewBuilder,
+    WebviewUrl, WindowBuilder,
 };
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
@@ -301,19 +303,19 @@ fn build_window(
 
     // 页面加载事件（Started/Finished）直接写进共享状态，watcher 用 Condvar 等它。
     app.manage(toolbar::ToolbarState::new(app, parsed_target.as_str()));
-    // 窗口尺寸：有上次的记录就由 tauri-plugin-window-state 在建窗时恢复
-    // （尺寸 / 位置 / 是否最大化）；没有记录（首次启动）就最大化。
+    // 窗口尺寸：读 tauri-plugin-window-state 上次存的记录（尺寸 / 位置 / 是否最大化），
+    // 收进显示器工作区后自己设上；没有记录（首次启动）就最大化。插件只负责保存。
     // 不用 `.fullscreen(true)`：Windows / Linux 上那是无边框盖住任务栏，
     // 没有最小化和关闭按钮，和 macOS 的"全屏 Space"完全不是一回事。
-    let first_launch = !has_saved_window_state(app);
+    // 先隐藏建窗：位置尺寸设好再显示，不会先闪一下默认大小。
+    let saved = read_saved_window_state(app);
     let window = WindowBuilder::new(app, WINDOW_LABEL)
         .title("粉笔刷题")
         .inner_size(1180.0, 880.0)
-        .min_inner_size(900.0, 640.0)
+        .min_inner_size(MIN_INNER_SIZE.0, MIN_INNER_SIZE.1)
+        .visible(false)
         .build()?;
-    if first_launch {
-        window.maximize()?;
-    }
+    place_window(&window, saved)?;
     // Visible uses FullSizeContentView on macOS and clips child views under the titlebar.
     #[cfg(target_os = "macos")]
     window.set_title_bar_style(tauri::TitleBarStyle::Transparent)?;
@@ -418,16 +420,105 @@ fn build_window(
         });
     }
 
+    window.show()?;
     let _ = win.set_focus();
     Ok(())
 }
 
-/// 窗口状态插件是否已经有这扇窗口的记录。没有就是首次启动，窗口该最大化。
-fn has_saved_window_state(app: &tauri::AppHandle) -> bool {
-    app.path()
-        .app_config_dir()
-        .map(|dir| dir.join(app.filename()).is_file())
-        .unwrap_or(false)
+/// 内容区最小尺寸（逻辑像素）。
+const MIN_INNER_SIZE: (f64, f64) = (900.0, 640.0);
+
+/// 按上次的记录摆放窗口，并收进显示器工作区（#9），该最大化的再最大化。
+///
+/// 插件自己的恢复不看屏幕大小：换到小屏、拔掉外接屏之后窗口会跑出屏幕；
+/// 而且它的恢复和建窗不同步，事后读回来再收会读到旧尺寸。所以让插件跳过
+/// 恢复（`skip_initial_state`），这里直接用记录算好一次设上。
+/// 记录为最大化时也收"普通尺寸"：用户一取消最大化，回到的就是收好的那个。
+fn place_window(window: &tauri::Window, saved: Option<window_fit::Saved>) -> tauri::Result<()> {
+    let to_rect = |r: &tauri::PhysicalRect<i32, u32>| window_fit::Rect {
+        x: r.position.x,
+        y: r.position.y,
+        width: r.size.width,
+        height: r.size.height,
+    };
+    let work_areas: Vec<_> = window
+        .available_monitors()?
+        .iter()
+        .map(|m| to_rect(m.work_area()))
+        .collect();
+    let primary = window.primary_monitor()?.map(|m| to_rect(m.work_area()));
+    let pos = window.outer_position()?;
+    let outer = window.outer_size()?;
+    let inner = window.inner_size()?;
+    let scale = window.scale_factor()?;
+    let placement = window_fit::place(
+        saved,
+        window_fit::Rect {
+            x: pos.x,
+            y: pos.y,
+            width: outer.width,
+            height: outer.height,
+        },
+        (
+            outer.width.saturating_sub(inner.width),
+            outer.height.saturating_sub(inner.height),
+        ),
+        (
+            (MIN_INNER_SIZE.0 * scale).round() as u32,
+            (MIN_INNER_SIZE.1 * scale).round() as u32,
+        ),
+        &work_areas,
+        primary,
+    );
+    if let Some(f) = placement.fitted {
+        window.set_size(PhysicalSize::new(f.inner_width, f.inner_height))?;
+        window.set_position(PhysicalPosition::new(f.x, f.y))?;
+    }
+    if placement.maximize {
+        window.maximize()?;
+    }
+    Ok(())
+}
+
+/// 第二次启动应用时，把已有窗口叫到前台（#7）。新进程由单实例插件负责退出。
+#[cfg_attr(debug_assertions, allow(dead_code))]
+fn focus_existing_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_window(WINDOW_LABEL) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// 读窗口状态插件上次存的记录。没有记录就是首次启动。
+fn read_saved_window_state(app: &tauri::AppHandle) -> Option<window_fit::Saved> {
+    let dir = app.path().app_config_dir().ok()?;
+    let json = std::fs::read_to_string(dir.join(app.filename())).ok()?;
+    parse_saved_window_state(&json, WINDOW_LABEL)
+}
+
+/// 解析插件的记录文件（格式属于钉死的 tauri-plugin-window-state 2.4.0）。
+/// 插件给从没存过的窗口写全 0 的默认记录，宽高为 0 的当作没有记录。
+fn parse_saved_window_state(json: &str, label: &str) -> Option<window_fit::Saved> {
+    let state: serde_json::Value = serde_json::from_str(json).ok()?;
+    let w = state.get(label)?;
+    let int = |key: &str| w.get(key).and_then(serde_json::Value::as_i64);
+    let maximized = w.get("maximized")?.as_bool()?;
+    // 最大化时插件把普通状态的位置记在 prev_x / prev_y
+    let (x, y) = if maximized {
+        (int("prev_x")?, int("prev_y")?)
+    } else {
+        (int("x")?, int("y")?)
+    };
+    let width = u32::try_from(int("width")?).ok().filter(|v| *v > 0)?;
+    let height = u32::try_from(int("height")?).ok().filter(|v| *v > 0)?;
+    Some(window_fit::Saved {
+        x: i32::try_from(x).ok()?,
+        y: i32::try_from(y).ok()?,
+        width,
+        height,
+        maximized,
+    })
 }
 
 /// 窗口状态里只记尺寸、位置和是否最大化。不记全屏 / 可见 / 边框：
@@ -456,10 +547,19 @@ pub fn run() {
         }
     };
 
-    tauri::Builder::default()
+    // 单实例必须最先注册。只在 release 启用：debug 与 release 共用 identifier，
+    // 全平台启用的话，装着正式版时 `pnpm dev` 会被正式版吞掉。
+    let builder = tauri::Builder::default();
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        focus_existing_window(app)
+    }));
+    builder
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_state_flags(WINDOW_STATE_FLAGS)
+                // 恢复由 place_window 自己做（要先收进工作区），插件只管保存
+                .skip_initial_state(WINDOW_LABEL)
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
@@ -541,6 +641,45 @@ mod tests {
             shared.next_step(1_000_000),
             WatchPoll::Wait { .. }
         ));
+    }
+
+    #[test]
+    fn saved_window_state_is_read_from_the_plugin_file() {
+        // Windows 虚拟机里插件实际写出的记录
+        let json = r#"{"main":{"width":984,"height":661,"x":100,"y":80,"prev_x":100,"prev_y":80,"maximized":false,"visible":true,"decorated":true,"fullscreen":false}}"#;
+        assert_eq!(
+            parse_saved_window_state(json, "main"),
+            Some(window_fit::Saved {
+                x: 100,
+                y: 80,
+                width: 984,
+                height: 661,
+                maximized: false
+            })
+        );
+    }
+
+    #[test]
+    fn maximized_record_uses_the_previous_position() {
+        let json = r#"{"main":{"width":2360,"height":1760,"x":0,"y":66,"prev_x":4,"prev_y":66,"maximized":true}}"#;
+        assert_eq!(
+            parse_saved_window_state(json, "main"),
+            Some(window_fit::Saved {
+                x: 4,
+                y: 66,
+                width: 2360,
+                height: 1760,
+                maximized: true
+            })
+        );
+    }
+
+    #[test]
+    fn empty_or_broken_records_count_as_first_launch() {
+        let zeros = r#"{"main":{"width":0,"height":0,"x":0,"y":0,"prev_x":0,"prev_y":0,"maximized":false}}"#;
+        assert_eq!(parse_saved_window_state(zeros, "main"), None);
+        assert_eq!(parse_saved_window_state(r#"{"other":{}}"#, "main"), None);
+        assert_eq!(parse_saved_window_state("not json", "main"), None);
     }
 
     #[test]
