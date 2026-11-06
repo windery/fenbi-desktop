@@ -618,6 +618,8 @@ Windows / Linux 上的等价行为**未验证**。
 <https://github.com/windery/fenbi-desktop/issues>
 
 按状态筛：`gh issue list --label ready-for-agent`（可交给 agent）、`--label ready-for-human`（需要真机或人判断）。
+断网冷启动时三平台的表现，以及为什么目前不做加载失败提示，见 [docs/research/2026-11-05-load-failure-signal.md](docs/research/2026-11-05-load-failure-signal.md)。
+
 issue 跟踪器的操作约定见 `docs/agents/issue-tracker.md`。
 
 ---
