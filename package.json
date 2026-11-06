@@ -1,7 +1,7 @@
 {
   "name": "fenbi-desktop",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "粉笔题库桌面版（macOS / Windows / Linux）",
   "license": "MIT",
   "type": "module",
