@@ -8,10 +8,10 @@
   "packageManager": "pnpm@11.22.0",
   "scripts": {
     "tauri": "tauri",
-    "dev": "bash scripts/dev-run.sh",
+    "dev": "node scripts/dev-run.mjs",
     "build": "node scripts/build-ui.mjs",
     "bundle": "tauri build",
-    "check:js": "node --check src-tauri/init.js && node --check src-tauri/init-debug.js && node --check src-tauri/toolbar/shortcuts.js && node --check src-tauri/toolbar/toolbar.js && node --test",
+    "check:js": "node --check scripts/dev-run.mjs && node --check src-tauri/init.js && node --check src-tauri/init-debug.js && node --check src-tauri/toolbar/shortcuts.js && node --check src-tauri/toolbar/toolbar.js && node --test",
     "check:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml",
     "check": "pnpm build && pnpm run check:js && pnpm run check:rust"
   },

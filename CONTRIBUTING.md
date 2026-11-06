@@ -23,10 +23,16 @@
 | 窗口尺寸 | 首次启动最大化，之后由 `tauri-plugin-window-state` 恢复上次的尺寸与位置 |
 | 双 WebView 布局 | macOS / Windows 用 `set_bounds` 绝对定位；**Linux 另有一套**：tauri-runtime-wry 把子 WebView pack 进 GtkBox，`set_bounds` 是空操作，`toolbar.rs` 的 linux 版 `layout` 直接改 GTK packing（工具栏固定高、内容区 expand） |
 
-开发入口 `pnpm dev` 目前是 **Unix-only**（Bash + `pkill`，可执行文件路径也没带 `.exe`），
-所以 Windows 上开发要用 `cargo build` + 手动启动。
+开发入口 `pnpm dev`（`scripts/dev-run.mjs`）三平台通用。清理旧实例时：macOS / Linux 用 `pkill -f target/debug/fenbi-desktop`；
+Windows 用 PowerShell，**只结束完整路径等于本仓库 `target\debug\fenbi-desktop.exe` 的进程**，因为已安装的正式版 exe 也叫 `fenbi-desktop.exe`，不能误杀。
+Windows 上的验证情况：清理旧实例、启动、不误杀同名 exe，这三项在 Windows 11 ARM64 虚拟机里实测过（编译步骤用替身短路）；
+在 Windows 真机上用 MSVC 原生 `cargo build` 这一步**未验证**。
 
-Windows 上有两个已知坑：
+在 macOS 上用 `cargo xwin` **手动交叉编译** Windows 版时，必须设置 `RUSTFLAGS="-C target-feature=+crt-static"`，静态链接 VC 运行库，
+否则在没装 VC++ 运行库的机器上，一启动就会卡在「找不到 VCRUNTIME140.dll」的对话框上。
+正式包不受影响，因为 `tauri build` 会自己设置 `STATIC_VCRUNTIME=true`。
+
+Windows 上还有两个已知坑：
 
 - Tauri 文档指出**同步命令里读 cookie 会死锁**（[wry#583](https://github.com/tauri-apps/wry/issues/583)）。
   本项目不在命令里读 cookie——`current_login_decision` 只读内存快照，
@@ -669,7 +675,8 @@ FENBI_INIT_JS="$snapshot" node --test
 | `pnpm bundle`（release + 打 DMG） | ~2 分钟 | 只有交付才需要 |
 
 `pnpm dev` 会先 `cargo build`（顺带把 `init.js` 同步到 `target/debug/`），
-再 `exec` 启动，所以它是原地替换进程、不会有残留实例。
+再在前台启动 app：启动前先关掉上一次的 debug 实例，所以不会有残留实例；
+app 退出（或在终端按 Ctrl+C）后命令随之结束，编译失败则不启动、返回非零退出码。
 
 ### 改 `init.js` 不用重编译
 

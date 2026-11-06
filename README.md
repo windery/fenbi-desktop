@@ -208,7 +208,7 @@ pnpm dev
 
 | 命令 | 用途 |
 | --- | --- |
-| `pnpm dev` | debug 增量编译并启动，约 3 秒；仅支持 macOS / Linux，Windows 上的做法见 [CONTRIBUTING.md](CONTRIBUTING.md) |
+| `pnpm dev` | debug 增量编译并启动，约 3 秒；macOS / Linux / Windows 通用，会先关掉上一次留下的 debug 实例 |
 | `pnpm check` | commit 前必跑：JS 语法、JS 行为测试、`cargo fmt`、`cargo clippy -D warnings`、Rust 单元测试 |
 | `pnpm bundle` | release 构建并打安装包（LTO，约 2 分钟），产物在 `src-tauri/target/release/bundle/` |
 
