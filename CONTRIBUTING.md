@@ -11,7 +11,7 @@
 | 平台 | 构建 | 真机运行验证 |
 | --- | --- | --- |
 | macOS（ARM64 / x64） | CI 出包 | 主要开发平台，日常在用 |
-| Windows x64 | CI 出包 | Windows 11 ARM64 虚拟机：启动、窗口摆放与恢复（#8 #9）、单实例（#7）、断网页、`pnpm dev` 清理旧实例；**登录、刷题、x64 真机未验证** |
+| Windows x64 | CI 出包 | **未验证**（无真机记录） |
 | Linux x64 | CI 出包 | 2026-10-01 在 Xvfb 虚拟显示（WebKitGTK 2.52、openbox）下跑过 debug 构建，见文末验收记录 |
 
 代码里没有平台硬编码：
@@ -23,16 +23,10 @@
 | 窗口尺寸 | 首次启动最大化，之后由 `tauri-plugin-window-state` 恢复上次的尺寸与位置 |
 | 双 WebView 布局 | macOS / Windows 用 `set_bounds` 绝对定位；**Linux 另有一套**：tauri-runtime-wry 把子 WebView pack 进 GtkBox，`set_bounds` 是空操作，`toolbar.rs` 的 linux 版 `layout` 直接改 GTK packing（工具栏固定高、内容区 expand） |
 
-开发入口 `pnpm dev`（`scripts/dev-run.mjs`）三平台通用。清理旧实例时：macOS / Linux 用 `pkill -f target/debug/fenbi-desktop`；
-Windows 用 PowerShell，**只结束完整路径等于本仓库 `target\debug\fenbi-desktop.exe` 的进程**，因为已安装的正式版 exe 也叫 `fenbi-desktop.exe`，不能误杀。
-Windows 上的验证情况：清理旧实例、启动、不误杀同名 exe，这三项在 Windows 11 ARM64 虚拟机里实测过（编译步骤用替身短路）；
-在 Windows 真机上用 MSVC 原生 `cargo build` 这一步**未验证**。
+开发入口 `pnpm dev` 目前是 **Unix-only**（Bash + `pkill`，可执行文件路径也没带 `.exe`），
+所以 Windows 上开发要用 `cargo build` + 手动启动。
 
-在 macOS 上用 `cargo xwin` **手动交叉编译** Windows 版时，必须设置 `RUSTFLAGS="-C target-feature=+crt-static"`，静态链接 VC 运行库，
-否则在没装 VC++ 运行库的机器上，一启动就会卡在「找不到 VCRUNTIME140.dll」的对话框上。
-正式包不受影响，因为 `tauri build` 会自己设置 `STATIC_VCRUNTIME=true`。
-
-Windows 上还有两个已知坑：
+Windows 上有两个已知坑：
 
 - Tauri 文档指出**同步命令里读 cookie 会死锁**（[wry#583](https://github.com/tauri-apps/wry/issues/583)）。
   本项目不在命令里读 cookie——`current_login_decision` 只读内存快照，
@@ -50,8 +44,8 @@ CI 里的 apt 依赖列表见 `.github/workflows/release.yml`。
 ### 打 tag 触发
 
 ```bash
-git tag v<版本>          # 例如 v0.1.3，与三处版本号一致（见下文）
-git push origin v<版本>
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
 GitHub Actions 会并行构建四份产物（`.github/workflows/release.yml`）：
@@ -618,8 +612,6 @@ Windows / Linux 上的等价行为**未验证**。
 <https://github.com/windery/fenbi-desktop/issues>
 
 按状态筛：`gh issue list --label ready-for-agent`（可交给 agent）、`--label ready-for-human`（需要真机或人判断）。
-断网冷启动时三平台的表现，以及为什么目前不做加载失败提示，见 [docs/research/2026-11-05-load-failure-signal.md](docs/research/2026-11-05-load-failure-signal.md)。
-
 issue 跟踪器的操作约定见 `docs/agents/issue-tracker.md`。
 
 ---
@@ -677,8 +669,7 @@ FENBI_INIT_JS="$snapshot" node --test
 | `pnpm bundle`（release + 打 DMG） | ~2 分钟 | 只有交付才需要 |
 
 `pnpm dev` 会先 `cargo build`（顺带把 `init.js` 同步到 `target/debug/`），
-再在前台启动 app：启动前先关掉上一次的 debug 实例，所以不会有残留实例；
-app 退出（或在终端按 Ctrl+C）后命令随之结束，编译失败则不启动、返回非零退出码。
+再 `exec` 启动，所以它是原地替换进程、不会有残留实例。
 
 ### 改 `init.js` 不用重编译
 
@@ -702,7 +693,7 @@ pnpm bundle
 产物：
 
 - `src-tauri/target/release/bundle/macos/粉笔刷题.app`
-- `src-tauri/target/release/bundle/dmg/粉笔刷题_<版本>_aarch64.dmg`
+- `src-tauri/target/release/bundle/dmg/粉笔刷题_0.1.1_aarch64.dmg`
 
 打包完可以直接启动已构建的 app 来测，不必重新打 DMG：
 

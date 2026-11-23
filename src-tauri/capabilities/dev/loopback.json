@@ -10,6 +10,7 @@
   "permissions": [
     "allow-wrapper-commands",
     "allow-toggle-toolbar",
+    "allow-study-shortcuts",
     "allow-debug-logout"
   ],
   "webviews": [

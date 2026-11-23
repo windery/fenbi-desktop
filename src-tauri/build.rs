@@ -16,7 +16,12 @@ fn main() {
         .expect("无法定位 target 目录")
         .to_path_buf();
 
-    for name in ["init.js", "init-debug.js", "toolbar/shortcuts.js"] {
+    for name in [
+        "init.js",
+        "init-debug.js",
+        "study-tools.js",
+        "toolbar/shortcuts.js",
+    ] {
         let src = Path::new(name);
         println!("cargo:rerun-if-changed={name}");
         let dest = dest_dir.join(Path::new(name).file_name().unwrap());
@@ -50,6 +55,8 @@ fn main() {
                 "toolbar_action",
                 "toolbar_state",
                 "toggle_toolbar",
+                "study_shortcuts",
+                "save_study_shortcuts",
             ])),
     )
     .expect("生成 Tauri 权限失败")

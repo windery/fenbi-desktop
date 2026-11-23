@@ -8,6 +8,8 @@
   "permissions": [
     "allow-toolbar-action",
     "allow-toolbar-state",
-    "allow-toggle-toolbar"
+    "allow-toggle-toolbar",
+    "allow-study-shortcuts",
+    "allow-save-study-shortcuts"
   ]
 }

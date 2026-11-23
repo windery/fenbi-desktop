@@ -7,8 +7,11 @@ pub const TOOLBAR: &str = "toolbar";
 pub const EXPANDED_HEIGHT: f64 = 36.0;
 pub const COLLAPSED_HEIGHT: f64 = 24.0;
 
+type StudyShortcuts = [String; 2];
+
 pub struct ToolbarState {
     view: Mutex<(u64, bool)>,
+    shortcuts: Mutex<(u64, StudyShortcuts)>,
     target: String,
 }
 
@@ -17,8 +20,14 @@ impl ToolbarState {
         let collapsed = state_path(app)
             .and_then(|path| std::fs::read_to_string(path).ok())
             .is_some_and(|s| s.trim() == "collapsed");
+        let shortcuts = shortcuts_path(app)
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|data| serde_json::from_slice::<StudyShortcuts>(&data).ok())
+            .filter(valid_study_shortcuts)
+            .unwrap_or_else(|| ["e".into(), "backspace".into()]);
         Self {
             view: Mutex::new((0, collapsed)),
+            shortcuts: Mutex::new((0, shortcuts)),
             target: target.into(),
         }
     }
@@ -29,6 +38,62 @@ fn state_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
         .app_data_dir()
         .ok()
         .map(|p| p.join("toolbar-state"))
+}
+
+fn shortcuts_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|path| path.join("study-shortcuts.json"))
+}
+
+fn valid_study_shortcuts([toggle, remove]: &StudyShortcuts) -> bool {
+    let valid = |key: &str| {
+        matches!(key.as_bytes(), [b'a'..=b'z' | b'0'..=b'9'])
+            || matches!(key, "backspace" | "delete")
+    };
+    toggle != remove && valid(toggle) && valid(remove)
+}
+
+#[tauri::command]
+pub fn study_shortcuts(
+    state: tauri::State<'_, ToolbarState>,
+) -> Result<(u64, StudyShortcuts), String> {
+    Ok(state.shortcuts.lock().map_err(|e| e.to_string())?.clone())
+}
+
+#[tauri::command]
+pub async fn save_study_shortcuts(
+    webview: Webview,
+    app: tauri::AppHandle,
+    toggle_key: String,
+    remove_key: String,
+) -> Result<(), String> {
+    require_toolbar(webview.label())?;
+    let keys = [toggle_key, remove_key];
+    if !valid_study_shortcuts(&keys) {
+        return Err("请选择两个不同的有效快捷键".into());
+    }
+    let path = shortcuts_path(&app).ok_or("无法定位应用设置目录")?;
+    let state = app.state::<ToolbarState>();
+    {
+        let mut snapshot = state.shortcuts.lock().map_err(|e| e.to_string())?;
+        let pending = path.with_extension("tmp");
+        let save = || -> std::io::Result<()> {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&pending, serde_json::to_vec(&keys)?)?;
+            std::fs::rename(&pending, &path)
+        };
+        save().map_err(|e| e.to_string())?;
+        *snapshot = (snapshot.0 + 1, keys);
+    }
+    if let Some(content) = app.get_webview(CONTENT) {
+        let _ = content.eval("window.__fenbiRefreshStudyShortcuts?.();");
+        let _ = content.set_focus();
+    }
+    Ok(())
 }
 
 pub fn local_url_allowed(url: &tauri::Url) -> bool {

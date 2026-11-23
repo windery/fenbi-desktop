@@ -114,6 +114,38 @@ test("工具栏按钮只发送指定动作给 Rust", async () => {
   assert.deepEqual(env.navigations, [], "不能在工具栏 WebView 自身导航");
   assert.deepEqual(env.reloads, []);
 });
+
+test("统一设置通过按键录入，拒绝冲突并保存有效修改", async () => {
+  const env = await bootToolbar({ invoke: (command) => Promise.resolve({
+    toolbar_state: [0, false],
+    study_shortcuts: [0, ["e", "backspace"]],
+  }[command]) });
+  env.document.querySelector(".fenbi-settings-button").click();
+  await env.tick();
+  const toggle = env.document.querySelector("#fenbi-mark-key");
+  const remove = env.document.querySelector("#fenbi-remove-key");
+  const save = env.document.querySelectorAll(".fenbi-settings-button").find(button => button.textContent === "保存");
+  assert.equal(toggle.tagName, "INPUT");
+  assert.equal(toggle.value, "E");
+  assert.equal(remove.value, "Backspace");
+  function record(input, key) {
+    input.dispatch("keydown", { key, preventDefault() {} });
+  }
+  record(remove, "e");
+  save.click();
+  assert.match(env.document.querySelector(".fenbi-settings-feedback").textContent, /不同的快捷键/);
+  assert.equal(env.invocations.includes("save_study_shortcuts"), false);
+  record(remove, "Delete");
+  record(toggle, "h");
+  assert.equal(remove.value, "Delete");
+  assert.equal(toggle.value, "H");
+  save.click();
+  await env.tick();
+  assert.deepEqual(env.calls.at(-1), {
+    command: "save_study_shortcuts", args: { toggleKey: "h", removeKey: "delete" },
+  });
+  assert.match(env.document.querySelector(".fenbi-toolbar-status").textContent, /已保存/);
+});
 /* 把按钮上显示出来的键位文字，按"用户读标签、照着自己按"的方式翻成事件。
  * 只做字形 → 事件字段的映射，不复制生产代码的匹配逻辑。 */
 const MOD_GLYPHS = ["⌘", "⌃", "⌥", "⇧", "Ctrl", "Alt", "Shift"];

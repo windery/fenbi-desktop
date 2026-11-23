@@ -10,7 +10,8 @@
   },
   "permissions": [
     "allow-wrapper-commands",
-    "allow-toggle-toolbar"
+    "allow-toggle-toolbar",
+    "allow-study-shortcuts"
   ],
   "webviews": [
     "main"

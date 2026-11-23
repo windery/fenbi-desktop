@@ -150,6 +150,52 @@ html, body {
   cursor: pointer;
 }
 
+.fenbi-shortcut-settings {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: nowrap;
+}
+
+.fenbi-shortcut-settings label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fenbi-settings-button,
+.fenbi-shortcut-key {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #d8e0ea;
+  border-radius: 5px;
+  background: #fff;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.fenbi-settings-button:hover:not(:disabled) {
+  background: #edf3ff;
+  color: #2457a3;
+}
+
+.fenbi-settings-button:focus-visible,
+.fenbi-shortcut-key:focus-visible {
+  outline: 2px solid #285fb8;
+  outline-offset: 1px;
+}
+
+.fenbi-shortcut-key {
+  width: 78px;
+  box-sizing: border-box;
+  cursor: text;
+}
+
+.fenbi-settings-feedback {
+  color: #a4262c;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .fenbi-toolbar-btn,
   .fenbi-toolbar-toggle { transition: none; }

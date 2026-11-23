@@ -18,6 +18,7 @@
   var hintText = "";
   var errorText = "";
   var errorTimer = null;
+  var settingsPanel = null;
 
   var ACTIONS = [
     { action: "back", text: "返回上一页" },
@@ -155,11 +156,105 @@
     return button;
   }
 
+  function textButton(label, click) {
+    var button = document.createElement("button");
+    button.className = "fenbi-settings-button";
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", click);
+    return button;
+  }
+
+  function shortcutField(panel, id, labelText, selected) {
+    var label = document.createElement("label");
+    label.textContent = labelText;
+    label.setAttribute("for", id);
+    var input = document.createElement("input");
+    input.id = id;
+    input.className = "fenbi-shortcut-key";
+    input.type = "text";
+    input.readOnly = true;
+    input.title = "点击后按字母、数字、Backspace 或 Delete";
+    var key = selected;
+    function paint() {
+      input.value = key === "backspace" ? "Backspace" : key === "delete" ? "Delete" : key.toUpperCase();
+    }
+    input.addEventListener("keydown", function (event) {
+      if (event.key === "Tab" || event.isComposing) return;
+      event.preventDefault();
+      if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      var pressed = event.key.toLowerCase();
+      if (!/^(?:[a-z0-9]|backspace|delete)$/.test(pressed)) return;
+      key = pressed;
+      paint();
+    });
+    paint();
+    label.appendChild(input);
+    panel.appendChild(label);
+    return { input: input, key: function () { return key; } };
+  }
+
+  function openSettings() {
+    var panel = document.createElement("div");
+    panel.className = "fenbi-shortcut-settings";
+    settingsPanel = panel;
+    status = null;
+    bar.textContent = "";
+    var back = textButton("返回", function () {
+      render("expanded");
+      document.querySelector(".fenbi-settings-button")?.focus?.();
+    });
+    panel.appendChild(back);
+    var feedback = document.createElement("span");
+    feedback.className = "fenbi-settings-feedback";
+    feedback.setAttribute("role", "status");
+    feedback.textContent = "正在读取快捷键";
+    panel.appendChild(feedback);
+    bar.appendChild(panel);
+
+    call("study_shortcuts").then(function (snapshot) {
+      if (settingsPanel !== panel) return;
+      panel.removeChild(feedback);
+      var toggle = shortcutField(panel, "fenbi-mark-key", "标注模式", snapshot[1][0]);
+      var remove = shortcutField(panel, "fenbi-remove-key", "移除高亮", snapshot[1][1]);
+      var save = textButton("保存", function () {
+        if (toggle.key() === remove.key()) {
+          feedback.textContent = "两个动作需要不同的快捷键";
+          return;
+        }
+        save.disabled = back.disabled = toggle.input.disabled = remove.input.disabled = true;
+        call("save_study_shortcuts", { toggleKey: toggle.key(), removeKey: remove.key() })
+          .then(function () {
+            if (settingsPanel === panel) {
+              render("expanded");
+              showHint("标注快捷键已保存");
+            }
+          })
+          .catch(function (error) {
+            console.error("保存标注快捷键失败", error);
+            if (settingsPanel !== panel) return;
+            save.disabled = back.disabled = toggle.input.disabled = remove.input.disabled = false;
+            feedback.textContent = "保存失败，请重试";
+          });
+      });
+      panel.appendChild(save);
+      panel.appendChild(feedback);
+      feedback.textContent = "点击输入框后按键";
+      toggle.input.focus?.();
+    }).catch(function (error) {
+      console.error("读取标注快捷键失败", error);
+      if (settingsPanel !== panel) return;
+      feedback.textContent = "快捷键暂不可用";
+      panel.appendChild(textButton("重试", openSettings));
+    });
+  }
+
   function render(state) {
     if (state !== currentState) hintText = "";
     currentState = state;
     status = null;
     toggleLabel = null;
+    settingsPanel = null;
     host.setAttribute("data-fenbi-toolbar", state);
     bar.textContent = "";
     if (state === "loading") {
@@ -197,6 +292,7 @@
       status.className = "fenbi-toolbar-status";
       status.setAttribute("role", "status");
       bar.appendChild(status);
+      bar.appendChild(textButton("设置", openSettings));
     }
     bar.appendChild(toggleButton(state, mac));
     paintStatus();
@@ -207,6 +303,7 @@
   });
   window.__fenbiRefreshToolbar = refresh;
   window.addEventListener("keydown", function (event) {
+    if (settingsPanel && event.target?.className === "fenbi-shortcut-key") return;
     var action = keys.action(event, keys.isMac());
     if (!action) return;
     event.preventDefault();

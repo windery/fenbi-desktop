@@ -88,7 +88,7 @@ sudo rpm -i fenbi-desktop_*.rpm
 | --- | --- | --- |
 | macOS（ARM64 / x64） | ✅ | ✅ 主要开发平台，日常使用 |
 | Linux x64 | ✅ | ⚠️ 在 Xvfb 虚拟显示下验证过启动、登录提示、工具栏和窗口恢复 |
-| Windows x64 | ✅ | ⚠️ 在 Windows 11 ARM64 虚拟机里验证过启动、窗口摆放与恢复、单实例、断网提示；登录与刷题未验证 |
+| Windows x64 | ✅ | ❌ 尚未实机验证 |
 
 在 Windows 或 Linux 上遇到问题，欢迎[提 issue](https://github.com/windery/fenbi-desktop/issues)。
 
@@ -208,7 +208,7 @@ pnpm dev
 
 | 命令 | 用途 |
 | --- | --- |
-| `pnpm dev` | debug 增量编译并启动，约 3 秒；macOS / Linux / Windows 通用，会先关掉上一次留下的 debug 实例 |
+| `pnpm dev` | debug 增量编译并启动，约 3 秒；仅支持 macOS / Linux，Windows 上的做法见 [CONTRIBUTING.md](CONTRIBUTING.md) |
 | `pnpm check` | commit 前必跑：JS 语法、JS 行为测试、`cargo fmt`、`cargo clippy -D warnings`、Rust 单元测试 |
 | `pnpm bundle` | release 构建并打安装包（LTO，约 2 分钟），产物在 `src-tauri/target/release/bundle/` |
 
