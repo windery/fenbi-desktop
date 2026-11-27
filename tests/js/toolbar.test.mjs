@@ -135,6 +135,36 @@ test("收起时没有齿轮", async () => {
   assert.equal(env.toolbarSettings(), null);
 });
 
+const hasDot = (element) => element.children.some((child) => child.className === "fenbi-toolbar-dot");
+
+test("有新版时齿轮带红点，收起后红点换到展开把手上", async () => {
+  let snapshot = [0, false, true];
+  const env = await bootToolbar({ invoke: () => Promise.resolve(snapshot) });
+  assert.ok(hasDot(env.toolbarSettings()), "展开时红点在齿轮上");
+  assert.ok(!hasDot(env.toolbarToggle()), "展开时收起按钮不带红点");
+  assert.equal(env.toolbarSettings().getAttribute("aria-label"), "设置", "红点不改提示文字");
+  snapshot = [1, true, true];
+  await env.refreshToolbar();
+  assert.ok(hasDot(env.toolbarToggle()), "收起时红点在展开把手上");
+});
+
+test("没有新版时齿轮和展开把手都不带红点", async () => {
+  let snapshot = [0, false, false];
+  const env = await bootToolbar({ invoke: () => Promise.resolve(snapshot) });
+  assert.ok(!hasDot(env.toolbarSettings()));
+  snapshot = [1, true, false];
+  await env.refreshToolbar();
+  assert.ok(!hasDot(env.toolbarToggle()));
+});
+
+test("启动后才查到新版时，重读状态就补上红点", async () => {
+  let snapshot = [0, false, false];
+  const env = await bootToolbar({ invoke: () => Promise.resolve(snapshot) });
+  snapshot = [0, false, true];
+  await env.refreshToolbar();
+  assert.ok(hasDot(env.toolbarSettings()));
+});
+
 test("点齿轮只向 Rust 发打开设置菜单这一个命令，并带上齿轮左下角的位置", async () => {
   const env = await bootToolbar();
   const gear = env.toolbarSettings();

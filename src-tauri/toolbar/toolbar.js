@@ -13,6 +13,7 @@
   var revision = -1;
   var requestId = 0;
   var currentState = "loading";
+  var hasUpdate = false;
   var status = null;
   var toggleLabel = null;
   var hintText = "";
@@ -102,6 +103,7 @@
     return call("toolbar_state").then(function (snapshot) {
       if (snapshot[0] < revision) return;
       revision = snapshot[0];
+      hasUpdate = snapshot[2] === true;
       render(snapshot[1] ? "collapsed" : "expanded");
     }).catch(function (error) {
       console.error("工具栏状态读取失败", error);
@@ -113,6 +115,15 @@
     clearError();
     var command = action === "toggle" ? "toggle_toolbar" : "toolbar_action";
     call(command, { action: action }).catch(report);
+  }
+
+  /* 有新版的唯一提示：展开时在齿轮上，收起时在展开把手上。 */
+  function addUpdateDot(button) {
+    if (!hasUpdate) return;
+    var dot = document.createElement("span");
+    dot.className = "fenbi-toolbar-dot";
+    dot.setAttribute("aria-hidden", "true");
+    button.appendChild(dot);
   }
 
   function addHintEvents(button, text) {
@@ -144,6 +155,7 @@
     button.setAttribute("title", "设置");
     button.setAttribute("aria-label", "设置");
     button.appendChild(icon("settings"));
+    addUpdateDot(button);
     addHintEvents(button, "设置");
     button.addEventListener("click", function () {
       clearError();
@@ -168,6 +180,7 @@
       toggleLabel = document.createElement("span");
       toggleLabel.className = "fenbi-toolbar-toggle-label";
       button.appendChild(toggleLabel);
+      addUpdateDot(button);
     }
     addHintEvents(button, label);
     button.addEventListener("click", function (event) {

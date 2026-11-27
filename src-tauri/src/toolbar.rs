@@ -49,9 +49,11 @@ fn require_toolbar(label: &str) -> Result<(), String> {
 pub fn toolbar_state(
     webview: Webview,
     state: tauri::State<'_, ToolbarState>,
-) -> Result<(u64, bool), String> {
+    updates: tauri::State<'_, super::update::UpdateState>,
+) -> Result<(u64, bool, bool), String> {
     require_toolbar(webview.label())?;
-    Ok(*state.view.lock().map_err(|e| e.to_string())?)
+    let (revision, collapsed) = *state.view.lock().map_err(|e| e.to_string())?;
+    Ok((revision, collapsed, updates.has_update()))
 }
 
 /// Runs the whole resize transaction on the UI thread, avoiding out-of-order bounds
