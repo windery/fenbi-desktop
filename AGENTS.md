@@ -43,6 +43,7 @@
 - 待办与优先级：`docs/issues/` 下的本地议题，操作约定见 `docs/agents/issue-tracker.md`
 - 用词：[GLOSSARY.md](GLOSSARY.md)
 - 带理由的决定：`docs/adr/`
+- 包装层自己画的界面（设置页面等）的样子：[DESIGN.md](DESIGN.md)，画界面、改样式前读
 
 ## Agent skills
 
