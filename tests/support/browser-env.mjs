@@ -557,9 +557,19 @@ export function createEnv(options = {}) {
         .find((el) => el.getAttribute("data-fenbi-action") === action) ?? null;
     },
 
-    /** 展开状态右侧的齿轮按钮（设置菜单入口）；收起时不存在。 */
+    /** 展开状态右侧的齿轮按钮（设置页面的入口）；收起时不存在。 */
     toolbarSettings() {
       return document.querySelectorAll(".fenbi-toolbar-settings")[0] ?? null;
+    },
+
+    /** 设置页面：开着时画在工具栏下面，关着时不存在。 */
+    settingsPage() {
+      return document.querySelectorAll(".fenbi-settings")[0] ?? null;
+    },
+
+    /** 设置页面左上的返回箭头。 */
+    settingsBack() {
+      return document.querySelectorAll(".fenbi-settings-back")[0] ?? null;
     },
 
     /** 从按钮的无障碍名称读取快捷键；可见提示在悬停/聚焦时显示在栏内。 */

@@ -165,17 +165,89 @@ test("启动后才查到新版时，重读状态就补上红点", async () => {
   assert.ok(hasDot(env.toolbarSettings()));
 });
 
-test("点齿轮只向 Rust 发打开设置菜单这一个命令，并带上齿轮左下角的位置", async () => {
+/* 设置页面开着的快照：[序号, 收起, 有新版, 设置页面开着]。 */
+const SETTINGS_OPEN = [1, false, false, true];
+const NAV_ACTIONS = ["back", "forward", "reload", "catalog"];
+
+test("点齿轮只向 Rust 发开关设置页面这一个命令", async () => {
   const env = await bootToolbar();
-  const gear = env.toolbarSettings();
-  gear.rect = { left: 1108, bottom: 33 };
   const before = env.calls.length;
-  gear.click();
-  assert.deepEqual(env.calls.slice(before), [
-    { command: "open_settings_menu", args: { x: 1108, y: 33 } },
-  ]);
+  env.toolbarSettings().click();
+  assert.deepEqual(env.calls.slice(before), [{ command: "toggle_settings", args: undefined }]);
   assert.deepEqual(env.navigations, [], "不能在工具栏 WebView 自身导航");
   assert.deepEqual(env.reloads, []);
+});
+
+test("设置页面关着时没有设置页面的内容，齿轮不是按下状态，Esc 不发任何命令", async () => {
+  const env = await bootToolbar();
+  assert.equal(env.settingsPage(), null);
+  assert.equal(env.toolbarSettings().getAttribute("aria-pressed"), "false");
+  const before = env.calls.length;
+  const event = press(env, { code: "Escape", key: "Escape" });
+  assert.equal(event.defaultPrevented, false, "Esc 留给别人用");
+  assert.equal(env.calls.length, before);
+});
+
+test("设置页面开着时有返回箭头和「设置」标题，齿轮是按下状态", async () => {
+  const env = await bootToolbar({ invoke: () => Promise.resolve(SETTINGS_OPEN) });
+  assert.ok(env.settingsPage(), "工具栏下面画出设置页面");
+  const back = env.settingsBack();
+  assert.ok(back.children.some((child) => child.tagName === "SVG"), "返回只用箭头");
+  assert.equal(back.textContent.trim(), "");
+  assert.equal(back.getAttribute("title"), "返回");
+  assert.equal(back.getAttribute("aria-label"), "返回");
+  const title = env.document.querySelector(".fenbi-settings-title");
+  assert.equal(title.tagName, "H1");
+  assert.equal(title.textContent, "设置");
+  assert.equal(env.toolbarSettings().getAttribute("aria-pressed"), "true");
+});
+
+test("设置页面开着时，返回、前进、刷新、回题库、收起都禁用，点了不发任何命令", async () => {
+  const env = await bootToolbar({ invoke: () => Promise.resolve(SETTINGS_OPEN) });
+  const buttons = [...NAV_ACTIONS.map((action) => env.toolbarButton(action)), env.toolbarToggle()];
+  const before = env.calls.length;
+  for (const button of buttons) {
+    assert.notEqual(button.getAttribute("disabled"), null, button.getAttribute("aria-label"));
+    button.click();
+  }
+  assert.equal(env.calls.length, before);
+  assert.equal(env.toolbarSettings().getAttribute("disabled"), null, "齿轮还能点");
+});
+
+test("设置页面开着时，五个快捷键被吞掉、不发任何命令", async () => {
+  for (const platform of ["MacIntel", "Win32"]) {
+    const closed = await bootToolbar({ platform });
+    const labels = [...NAV_ACTIONS.map((action) => closed.toolbarButton(action)), closed.toolbarToggle()]
+      .map((button) => closed.hintText(button));
+    const env = await bootToolbar({ platform, invoke: () => Promise.resolve(SETTINGS_OPEN) });
+    const before = env.calls.length;
+    for (const label of labels) {
+      const event = pressLabel(env, label);
+      assert.equal(event.defaultPrevented, true, `${label} 不能漏给系统默认行为`);
+    }
+    assert.equal(env.calls.length, before);
+  }
+});
+
+test("设置页面开着时，按 Esc、点返回箭头、再点齿轮，各发一次开关设置页面", async () => {
+  const env = await bootToolbar({ invoke: () => Promise.resolve(SETTINGS_OPEN) });
+  const before = env.calls.length;
+  const event = press(env, { code: "Escape", key: "Escape" });
+  assert.equal(event.defaultPrevented, true);
+  env.settingsBack().click();
+  env.toolbarSettings().click();
+  assert.deepEqual(env.calls.slice(before), Array(3).fill({ command: "toggle_settings", args: undefined }));
+});
+
+test("设置页面关掉后，设置页面的内容消失，按钮恢复可用", async () => {
+  let snapshot = SETTINGS_OPEN;
+  const env = await bootToolbar({ invoke: () => Promise.resolve(snapshot) });
+  snapshot = [2, false, false, false];
+  await env.refreshToolbar();
+  assert.equal(env.settingsPage(), null);
+  assert.equal(env.toolbarButton("back").getAttribute("disabled"), null);
+  env.toolbarButton("back").click();
+  assert.deepEqual(env.calls.at(-1), { command: "toolbar_action", args: { action: "back" } });
 });
 
 /* 把按钮上显示出来的键位文字，按"用户读标签、照着自己按"的方式翻成事件。

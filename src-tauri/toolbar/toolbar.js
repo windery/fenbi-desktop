@@ -14,6 +14,8 @@
   var requestId = 0;
   var currentState = "loading";
   var hasUpdate = false;
+  var settingsOpen = false;
+  var settingsPage = null;
   var status = null;
   var toggleLabel = null;
   var hintText = "";
@@ -33,6 +35,7 @@
     catalog: ["M3.5 4.5c2.4-.6 4.4-.4 6.5.6v10.8c-2.1-1-4.1-1.2-6.5-.6z", "M16.5 4.5c-2.4-.6-4.4-.4-6.5.6v10.8c2.1-1 4.1-1.2 6.5-.6z"],
     up: ["m5.2 12.4 4.8-4.8 4.8 4.8"],
     down: ["m5.2 7.6 4.8 4.8 4.8-4.8"],
+    chevron: ["m11.8 5.2-4.8 4.8 4.8 4.8"],
     settings: [
       "M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6",
       "M10 5.2a4.8 4.8 0 1 0 0 9.6 4.8 4.8 0 0 0 0-9.6z",
@@ -104,6 +107,7 @@
       if (snapshot[0] < revision) return;
       revision = snapshot[0];
       hasUpdate = snapshot[2] === true;
+      settingsOpen = snapshot[3] === true;
       render(snapshot[1] ? "collapsed" : "expanded");
     }).catch(function (error) {
       console.error("工具栏状态读取失败", error);
@@ -111,7 +115,9 @@
     });
   }
 
+  /* 设置页面开着时，工具栏上只有齿轮能用；Rust 那边也同样拒绝，这里先拦一道。 */
   function runShortcut(action) {
+    if (settingsOpen) return;
     clearError();
     var command = action === "toggle" ? "toggle_toolbar" : "toolbar_action";
     call(command, { action: action }).catch(report);
@@ -124,6 +130,15 @@
     dot.className = "fenbi-toolbar-dot";
     dot.setAttribute("aria-hidden", "true");
     button.appendChild(dot);
+  }
+
+  function toggleSettings() {
+    clearError();
+    call("toggle_settings").catch(report);
+  }
+
+  function disableWhileSettingsOpen(button) {
+    if (settingsOpen) button.setAttribute("disabled", "");
   }
 
   function addHintEvents(button, text) {
@@ -142,27 +157,50 @@
     button.setAttribute("title", label);
     button.setAttribute("aria-label", label);
     button.appendChild(icon(item.action));
+    disableWhileSettingsOpen(button);
     addHintEvents(button, label);
     button.addEventListener("click", function () { runShortcut(item.action); });
     return button;
   }
 
-  /* 设置菜单是系统原生菜单，由 Rust 弹出；这里只报出齿轮左下角，让菜单贴着齿轮。 */
+  /* 齿轮开关设置页面：Rust 把这个 WebView 撑满窗口，设置页面画在工具栏下面。 */
   function settingsButton() {
     var button = document.createElement("button");
     button.className = "fenbi-toolbar-btn fenbi-toolbar-settings";
     button.setAttribute("type", "button");
     button.setAttribute("title", "设置");
     button.setAttribute("aria-label", "设置");
+    button.setAttribute("aria-pressed", settingsOpen ? "true" : "false");
     button.appendChild(icon("settings"));
     addUpdateDot(button);
     addHintEvents(button, "设置");
-    button.addEventListener("click", function () {
-      clearError();
-      var rect = button.getBoundingClientRect();
-      call("open_settings_menu", { x: rect.left, y: rect.bottom }).catch(report);
-    });
+    button.addEventListener("click", toggleSettings);
     return button;
+  }
+
+  /* 设置页面的骨架照 DESIGN.md：标题行是返回箭头紧挨「设置」。 */
+  function buildSettingsPage() {
+    var page = document.createElement("main");
+    page.className = "fenbi-settings";
+    var column = document.createElement("div");
+    column.className = "fenbi-settings-col";
+    var head = document.createElement("div");
+    head.className = "fenbi-settings-head";
+    var back = document.createElement("button");
+    back.className = "fenbi-settings-back";
+    back.setAttribute("type", "button");
+    back.setAttribute("title", "返回");
+    back.setAttribute("aria-label", "返回");
+    back.appendChild(icon("chevron"));
+    back.addEventListener("click", toggleSettings);
+    var title = document.createElement("h1");
+    title.className = "fenbi-settings-title";
+    title.textContent = "设置";
+    head.appendChild(back);
+    head.appendChild(title);
+    column.appendChild(head);
+    page.appendChild(column);
+    return page;
   }
 
   function toggleButton(state, mac) {
@@ -182,6 +220,7 @@
       button.appendChild(toggleLabel);
       addUpdateDot(button);
     }
+    disableWhileSettingsOpen(button);
     addHintEvents(button, label);
     button.addEventListener("click", function (event) {
       if (event.stopPropagation) event.stopPropagation();
@@ -197,6 +236,8 @@
     toggleLabel = null;
     host.setAttribute("data-fenbi-toolbar", state);
     bar.textContent = "";
+    if (settingsPage) host.removeChild(settingsPage);
+    settingsPage = state === "expanded" && settingsOpen ? host.appendChild(buildSettingsPage()) : null;
     if (state === "loading") {
       var loading = document.createElement("span");
       loading.className = "fenbi-toolbar-loading";
@@ -242,12 +283,17 @@
     if (currentState === "collapsed" && event.target === bar) runShortcut("toggle");
   });
   window.__fenbiRefreshToolbar = refresh;
+  function isPlainEscape(event) {
+    return event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+  }
   window.addEventListener("keydown", function (event) {
+    var closing = settingsOpen && isPlainEscape(event);
     var action = keys.action(event, keys.isMac());
-    if (!action) return;
+    if (!closing && !action) return;
     event.preventDefault();
     event.stopPropagation();
-    runShortcut(action);
+    if (closing) toggleSettings();
+    else runShortcut(action);
   }, true);
 
   render("loading");

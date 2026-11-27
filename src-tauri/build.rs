@@ -50,7 +50,7 @@ fn main() {
                 "toolbar_action",
                 "toolbar_state",
                 "toggle_toolbar",
-                "open_settings_menu",
+                "toggle_settings",
             ])),
     )
     .expect("生成 Tauri 权限失败")

@@ -86,6 +86,18 @@ html, body {
   outline-offset: -2px;
 }
 
+.fenbi-toolbar-btn[disabled],
+.fenbi-toolbar-toggle[disabled] {
+  background: transparent;
+  color: #c5ccd6;
+  cursor: default;
+}
+
+.fenbi-toolbar-settings[aria-pressed='true'] {
+  background: #dbe8ff;
+  color: #2457a3;
+}
+
 .fenbi-toolbar-btn svg,
 .fenbi-toolbar-toggle svg {
   flex: none;
@@ -174,7 +186,69 @@ html, body {
   cursor: pointer;
 }
 
+/* 设置页面：开着时这个 WebView 撑满窗口，页面画在工具栏下面。样式照 DESIGN.md。 */
+.fenbi-settings {
+  box-sizing: border-box;
+  height: calc(100vh - 36px);
+  overflow: auto;
+  background: #f6f6f7;
+  font: 13px/1.5 -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  color: #3f3f46;
+}
+
+.fenbi-settings-col {
+  box-sizing: border-box;
+  max-width: 592px;
+  margin: 0 auto;
+  padding: 28px 16px 0;
+}
+
+.fenbi-settings-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 0 22px -13px;
+}
+
+.fenbi-settings-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #52525b;
+  cursor: pointer;
+  transition: background-color 120ms ease-out;
+}
+
+.fenbi-settings-back:hover {
+  background: #e7e7ea;
+}
+
+.fenbi-settings-back:focus-visible {
+  outline: 2px solid #285fb8;
+  outline-offset: 2px;
+}
+
+.fenbi-settings-back svg {
+  width: 20px;
+  height: 20px;
+}
+
+.fenbi-settings-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #18181b;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .fenbi-toolbar-btn,
-  .fenbi-toolbar-toggle { transition: none; }
+  .fenbi-toolbar-toggle,
+  .fenbi-settings-back { transition: none; }
 }
