@@ -137,7 +137,7 @@ test("收起时没有齿轮", async () => {
 
 const hasDot = (element) => element.children.some((child) => child.className === "fenbi-toolbar-dot");
 
-test("有新版时齿轮带红点，收起后红点换到展开把手上", async () => {
+test("有没看过的新版时齿轮带红点，收起时展开把手不带红点", async () => {
   let snapshot = [0, false, true];
   const env = await bootToolbar({ invoke: () => Promise.resolve(snapshot) });
   assert.ok(hasDot(env.toolbarSettings()), "展开时红点在齿轮上");
@@ -145,7 +145,7 @@ test("有新版时齿轮带红点，收起后红点换到展开把手上", async
   assert.equal(env.toolbarSettings().getAttribute("aria-label"), "设置", "红点不改提示文字");
   snapshot = [1, true, true];
   await env.refreshToolbar();
-  assert.ok(hasDot(env.toolbarToggle()), "收起时红点在展开把手上");
+  assert.ok(!hasDot(env.toolbarToggle()), "收起时展开把手不带红点");
 });
 
 test("没有新版时齿轮和展开把手都不带红点", async () => {
@@ -165,7 +165,19 @@ test("启动后才查到新版时，重读状态就补上红点", async () => {
   assert.ok(hasDot(env.toolbarSettings()));
 });
 
-/* 设置页面开着的快照：[序号, 收起, 有新版, 设置页面开着]。 */
+test("打开设置页面看过新版后，重读状态红点就消失", async () => {
+  let snapshot = [0, false, true];
+  const env = await bootToolbar({ invoke: () => Promise.resolve(snapshot) });
+  assert.ok(hasDot(env.toolbarSettings()));
+  snapshot = [1, false, false, true];
+  await env.refreshToolbar();
+  assert.ok(!hasDot(env.toolbarSettings()), "设置页面开着时齿轮不带红点");
+  snapshot = [2, false, false, false];
+  await env.refreshToolbar();
+  assert.ok(!hasDot(env.toolbarSettings()), "关掉设置页面后红点不回来");
+});
+
+/* 设置页面开着的快照：[序号, 收起, 有没看过的新版, 设置页面开着]。 */
 const SETTINGS_OPEN = [1, false, false, true];
 const NAV_ACTIONS = ["back", "forward", "reload", "catalog"];
 

@@ -1,10 +1,11 @@
 //! 检查更新：问 GitHub「本仓库最新发布是哪一版」，比本机新就记下来，工具栏据此画红点。
 //!
-//! 只读一个版本号。不下载、不安装，结果只活在内存里。
+//! 只读一个版本号。不下载、不安装。查到的结果只活在内存里；存盘的只有「已看过的版本号」。
 //! 请求的是发布页网址本身：GitHub 用一次跳转回答，跳转地址末尾就是最新发布的 tag。
 //! 草稿和预发布不会成为这个跳转的目标。
 use super::toolbar::require_toolbar;
 use semver::Version;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
@@ -14,20 +15,57 @@ pub const RELEASES_URL: &str = "https://github.com/windery/fenbi-desktop/release
 
 const TIMEOUT: Duration = Duration::from_secs(8);
 
-/// 比本机新的那个版本；没有或还没查到就是空。
+/// 检查更新记下的两个版本号。
+#[derive(Default)]
+struct Versions {
+    /// 比本机新的那个版本；没有或还没查到就是空。只活在内存里。
+    newer: Option<Version>,
+    /// 已看过的版本号：用户最近一次在设置页面里看到的新版。存盘，重启后还在。
+    seen: Option<Version>,
+}
+
 #[derive(Default)]
 pub struct UpdateState {
-    newer: Mutex<Option<Version>>,
+    versions: Mutex<Versions>,
+    /// 已看过的版本号存在哪个文件；空表示不存盘。
+    seen_path: Option<PathBuf>,
+}
+
+/// 已看过的版本号的存盘位置：和工具栏展开/收起状态同一目录。
+pub fn seen_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|p| p.join("seen-version"))
 }
 
 impl UpdateState {
-    pub fn has_update(&self) -> bool {
-        self.newer.lock().is_ok_and(|v| v.is_some())
+    /// 启动时读回已看过的版本号。文件没有或读不懂，就当作什么都没看过。
+    pub fn load(seen_path: Option<PathBuf>) -> Self {
+        let seen = seen_path
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| Version::parse(text.trim()).ok());
+        Self {
+            versions: Mutex::new(Versions { newer: None, seen }),
+            seen_path,
+        }
+    }
+
+    /// 要不要画红点：有新版，而且它比已看过的版本号高。
+    pub fn has_unseen_update(&self) -> bool {
+        self.versions
+            .lock()
+            .is_ok_and(|v| match (&v.newer, &v.seen) {
+                (Some(newer), Some(seen)) => newer > seen,
+                (newer, _) => newer.is_some(),
+            })
     }
 
     /// 已知的新版本号（不带 `v`）；没有就是空。
     pub fn newer_version(&self) -> Option<String> {
-        self.newer.lock().ok()?.as_ref().map(Version::to_string)
+        let versions = self.versions.lock().ok()?;
+        versions.newer.as_ref().map(Version::to_string)
     }
 
     /// 记下一次检查的结果，返回这次是否查到了新版。
@@ -35,10 +73,36 @@ impl UpdateState {
         if latest <= *current {
             return false;
         }
-        if let Ok(mut newer) = self.newer.lock() {
-            *newer = Some(latest);
+        if let Ok(mut versions) = self.versions.lock() {
+            versions.newer = Some(latest);
         }
         true
+    }
+
+    /// 用户在设置页面里看到了新版：把它记成已看过的版本号并存盘，红点随之消失。
+    /// 已看过的版本号只升不降。存盘失败只打日志，这次运行里红点照样消失。
+    pub fn mark_seen(&self) {
+        let Ok(mut versions) = self.versions.lock() else {
+            return;
+        };
+        let Some(newer) = versions.newer.clone() else {
+            return;
+        };
+        if versions.seen.as_ref().is_some_and(|seen| *seen >= newer) {
+            return;
+        }
+        if let Some(path) = &self.seen_path {
+            let save = || -> std::io::Result<()> {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(path, newer.to_string())
+            };
+            if let Err(e) = save() {
+                eprintln!("[fenbi-wrapper] 已看过的版本号没存上：{e}");
+            }
+        }
+        versions.seen = Some(newer);
     }
 }
 
@@ -105,7 +169,7 @@ pub fn settings_info(
     ))
 }
 
-/// 「检查更新」按钮。联网放在后台线程，查到新版就让工具栏补上红点。
+/// 「检查更新」按钮。联网放在后台线程，查到新版就让工具栏重读状态。
 #[tauri::command]
 pub async fn check_update(
     webview: tauri::Webview,
@@ -126,6 +190,8 @@ pub async fn check_update(
     .map_err(|e| e.to_string())?
     .inspect_err(|e| eprintln!("[fenbi-wrapper] 检查更新失败：{e}"))?;
     if found.is_some() {
+        // 「检查更新」按钮只在设置页面里，查到的新版用户当场就看到了。
+        app.state::<UpdateState>().mark_seen();
         let _ = webview.eval("window.__fenbiRefreshToolbar && window.__fenbiRefreshToolbar();");
     }
     Ok(found)
@@ -146,9 +212,13 @@ pub fn spawn_startup_check(app: &tauri::AppHandle) {
         let user_agent = format!("fenbi-desktop/{current}");
         match fetch_latest(&check_url(), &user_agent, TIMEOUT) {
             Ok(latest) => {
-                if app.state::<UpdateState>().record(&current, latest)
-                    && let Some(view) = app.get_webview(super::toolbar::TOOLBAR)
-                {
+                let updates = app.state::<UpdateState>();
+                let found = updates.record(&current, latest);
+                // 查完时设置页面已经开着：用户马上就看到这个新版，不再亮红点。
+                if found && app.state::<super::toolbar::ToolbarState>().settings_open() {
+                    updates.mark_seen();
+                }
+                if found && let Some(view) = app.get_webview(super::toolbar::TOOLBAR) {
                     let _ = view
                         .eval("window.__fenbiRefreshToolbar && window.__fenbiRefreshToolbar();");
                 }
@@ -220,13 +290,91 @@ mod tests {
         ] {
             let state = UpdateState::default();
             assert_eq!(state.record(&v("0.1.3"), v(latest)), expected, "{latest}");
-            assert_eq!(state.has_update(), expected, "{latest}");
+            assert_eq!(state.has_unseen_update(), expected, "{latest}");
         }
     }
 
     #[test]
     fn nothing_is_an_update_before_a_check_finishes() {
-        assert!(!UpdateState::default().has_update());
+        assert!(!UpdateState::default().has_unseen_update());
+    }
+
+    fn temp_seen_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("fenbi-seen-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("seen-version")
+    }
+
+    #[test]
+    fn the_dot_goes_once_the_new_version_is_seen_and_returns_for_a_higher_one() {
+        let state = UpdateState::default();
+        state.record(&v("0.1.3"), v("0.1.4"));
+        assert!(state.has_unseen_update());
+
+        state.mark_seen();
+        assert!(!state.has_unseen_update(), "看过就不再亮");
+        assert_eq!(
+            state.newer_version(),
+            Some("0.1.4".to_string()),
+            "设置页面里仍然显示这个新版"
+        );
+
+        state.record(&v("0.1.3"), v("0.1.4"));
+        assert!(!state.has_unseen_update(), "再查到同一版不亮");
+
+        state.record(&v("0.1.3"), v("0.1.5"));
+        assert!(state.has_unseen_update(), "出了更高的版本再亮");
+    }
+
+    #[test]
+    fn seeing_nothing_remembers_nothing() {
+        let path = temp_seen_path("nothing");
+        let state = UpdateState::load(Some(path.clone()));
+        state.mark_seen();
+        assert!(!path.exists(), "没有新版时不写文件");
+    }
+
+    #[test]
+    fn the_seen_version_survives_a_restart() {
+        let path = temp_seen_path("restart");
+        let first = UpdateState::load(Some(path.clone()));
+        first.record(&v("0.1.3"), v("0.1.4"));
+        first.mark_seen();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "0.1.4");
+
+        let second = UpdateState::load(Some(path.clone()));
+        second.record(&v("0.1.3"), v("0.1.4"));
+        assert!(!second.has_unseen_update(), "重启后查到同一版不亮");
+        second.record(&v("0.1.3"), v("0.1.5"));
+        assert!(second.has_unseen_update(), "重启后查到更高的版本再亮");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn the_seen_version_never_goes_down() {
+        let path = temp_seen_path("down");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "0.2.0\n").unwrap();
+        let state = UpdateState::load(Some(path.clone()));
+        state.record(&v("0.1.3"), v("0.1.4"));
+        assert!(!state.has_unseen_update());
+        state.mark_seen();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "0.2.0\n");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn an_unreadable_seen_file_counts_as_nothing_seen() {
+        let path = temp_seen_path("broken");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "不是版本号").unwrap();
+        let state = UpdateState::load(Some(path.clone()));
+        state.record(&v("0.1.3"), v("0.1.4"));
+        assert!(state.has_unseen_update());
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

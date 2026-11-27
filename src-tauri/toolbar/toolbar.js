@@ -130,7 +130,7 @@
     call(command, { action: action }).catch(report);
   }
 
-  /* 有新版的唯一提示：展开时在齿轮上，收起时在展开把手上。 */
+  /* 有没看过的新版时的唯一提示：齿轮上的红点。 */
   function addUpdateDot(button) {
     if (!hasUpdate) return;
     var dot = document.createElement("span");
@@ -324,7 +324,6 @@
       toggleLabel = document.createElement("span");
       toggleLabel.className = "fenbi-toolbar-toggle-label";
       button.appendChild(toggleLabel);
-      addUpdateDot(button);
     }
     disableWhileSettingsOpen(button);
     addHintEvents(button, label);

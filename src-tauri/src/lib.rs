@@ -579,7 +579,7 @@ pub fn run() {
             // 共享状态先于窗口注册：注入脚本随时可能 invoke 重读判定。
             let shared = Arc::new(WatchShared::new(heartbeat_interval_ms()));
             app.manage(Arc::clone(&shared));
-            app.manage(update::UpdateState::default());
+            app.manage(update::UpdateState::load(update::seen_path(app.handle())));
             build_window(app.handle(), &target, &parsed_target, parsed_entry, shared)?;
             update::spawn_startup_check(app.handle());
             Ok(())

@@ -62,6 +62,10 @@ impl ToolbarState {
             target: target.into(),
         }
     }
+
+    pub fn settings_open(&self) -> bool {
+        self.view.lock().is_ok_and(|view| view.settings_open)
+    }
 }
 
 fn state_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
@@ -96,7 +100,7 @@ pub fn toolbar_state(
     Ok((
         view.revision,
         view.collapsed,
-        updates.has_update(),
+        updates.has_unseen_update(),
         view.settings_open,
     ))
 }
@@ -182,6 +186,10 @@ pub async fn toggle_settings(webview: Webview, app: tauri::AppHandle) -> Result<
             }
             view.settings_open
         };
+        // 打开设置页面就算看过了新版：红点消失，出了更高的版本再亮。
+        if open {
+            handle.state::<super::update::UpdateState>().mark_seen();
+        }
         if let Some(window) = handle.get_window(super::WINDOW_LABEL)
             && let Err(e) = layout(&window)
         {
