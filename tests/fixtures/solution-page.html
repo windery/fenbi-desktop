@@ -1,0 +1,85 @@
+<!-- 解析页的会员相关结构。harness 没有 CSS 引擎，这份样本不参与断言，
+     只固定「裁剪规则针对的是什么结构」。解析页有两套前端。 -->
+
+<!-- ── spa.fenbi.com/ti/exam/solution/…（2026-11-27 对照真实页面，非会员账号）── -->
+
+<!-- 视频块，没开会员：站点渲染了 .member-container -> 整块被裁剪 -->
+<section class="result-common-section" id="section-video-3_3e_a5ng3">
+  <app-solution-title>
+    <div class="solution-title-container"><div class="solution-title">解析视频</div></div>
+  </app-solution-title>
+  <app-solution-video>
+    <div class="solution-video-container medium">
+      <div class="video-container">
+        <div class="video-mask"></div>
+        <div class="member-label"></div>
+        <div class="play-icon"></div>
+      </div>
+      <div class="member-container">
+        <div class="member-content">
+          <div class="member-title-container">
+            <div class="member-title">粉笔 <span class="member-title-text">职测</span> 会员</div>
+            <div class="member-detail">6484685人已开通</div>
+          </div>
+          <div class="member-btn"></div>
+        </div>
+      </div>
+    </div>
+  </app-solution-video>
+</section>
+
+<!-- 视频块，有权看（按站点脚本的模板：这时不渲染 .member-container）-> 不动 -->
+<section class="result-common-section">
+  <app-solution-title>
+    <div class="solution-title-container"><div class="solution-title">解析视频</div></div>
+  </app-solution-title>
+  <app-solution-video>
+    <div class="solution-video-container medium">
+      <div class="video-container"><div class="play-icon"></div></div>
+    </div>
+  </app-solution-video>
+</section>
+
+<!-- 同一道题的其它块：没有开通入口 -> 不动 -->
+<section class="result-common-section">
+  <app-solution-title>
+    <div class="solution-title-container"><div class="solution-title">解析</div></div>
+  </app-solution-title>
+</section>
+
+<!-- ── /tiku 下的旧解析组件（按站点脚本的模板整理，真实页面未核对）── -->
+
+<!-- 视频块，没开会员：会员遮罩显示着 -> 整块被裁剪 -->
+<li class="video-item m-b-24" style="display: flex">
+  <div class="video-item-content">
+    <div class="question-video-member">
+      <div class="info-tip h-5">会员专享</div>
+      <div class="info-title h-3">会员专享，观看解析视频请开通会员</div>
+      <button class="info-btn h-4">立即开通</button>
+    </div>
+    <div class="question-video"><button class="play-video-btn"></button></div>
+  </div>
+</li>
+
+<!-- 视频块，开了会员：会员遮罩带 hidden -> 不动 -->
+<li class="video-item m-b-24" style="display: flex">
+  <div class="video-item-content">
+    <div class="question-video-member" hidden>
+      <button class="info-btn h-4">立即开通</button>
+    </div>
+    <div class="question-video"><button class="play-video-btn"></button></div>
+  </div>
+</li>
+
+<!-- 申论会员内容块，没开会员：「立即开通」显示着 -> 整块被裁剪 -->
+<li>
+  <app-member-solution-accessory>
+    <div class="member-solution-accessory">
+      <div class="nav">
+        <span class="member-icon h-5"></span>
+        <button class="nav-btn h-5 m-r-28">立即开通</button>
+      </div>
+      <div class="content"></div>
+    </div>
+  </app-member-solution-accessory>
+</li>
