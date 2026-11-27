@@ -380,7 +380,7 @@ Rust 负责布局和受限命令；网站仍由 `init.js` 注入快捷键与裁�
 `init.js` 顶部有一组选择器常量（`UI_TWEAKS` 默认 `true` 总开关）。只注入 CSS，
 不碰站点逻辑。站点改版时选择器失效的表现只是"该隐藏的没隐藏"，不影响做题。
 
-五组选择器，**按隐藏方式分类**，不能混：
+六组选择器，**按隐藏方式分类**，不能混：
 
 | 常量 | 手法 | 用于 | 当前内容 |
 | --- | --- | --- | --- |
@@ -389,6 +389,7 @@ Rust 负责布局和受限命令；网站仍由 `init.js` 注入快捷键与裁�
 | `HIDE_CONTENT_SELECTORS` | 不可见但**保留原始尺寸** | 清空内容、留下留白 | 页脚三段 |
 | `NON_INTERACTIVE_SELECTORS` | **保留可见**、只去掉点击 | 留着占位但不能再导航的入口 | `a.fenbi-icon-url`（logo） |
 | `SHRINK_HEIGHT_CSS` | 改高度 | 压掉页脚过厚的留白 | `fb-web-footer` 高度 50% |
+| `UPSELL_BLOCK_SELECTORS` | `display: none`，**单独成一条规则** | 站点正在显示开通入口的整块内容 | 解析页的视频块；申论会员内容块 |
 
 把 `COLLAPSE_SELECTORS` 和 `HIDE_CONTENT_SELECTORS` 用反，就是踩过的坑：
 前者必须让出宽度，后者一旦归零留白就没了。
@@ -396,6 +397,27 @@ Rust 负责布局和受限命令；网站仍由 `init.js` 注入快捷键与裁�
 **会员卡**（「职测会员卡 / 尚未开通」）的扫码弹窗是**悬停**出来的，但卡片就在
 `.member-area` 内部（`article.buy-member-app-popup > fenbi-member-card`），
 所以摘掉入口即可，不需要单独处理弹窗；结构常驻、靠透明度显隐，只注入 CSS 就够。
+
+**解析页的开通入口**（用词见 `GLOSSARY.md`）只有一条规则：一块内容里，站点正在显示
+开通入口，就把这一整块藏掉；没有开通入口就不动。包装层不读账号、不调站点接口，
+因为站点已经把答案写在页面上——账号有权看时，它不渲染开通入口（旧组件是加 `hidden` 属性）。
+所以选择器写成 `整块:has(显示着的开通入口)`：
+
+- 视频块 `section.result-common-section`（`spa.fenbi.com/ti/` 的解析页），开通入口是
+  `app-solution-video .member-container`；站点只对无权看的账号渲染它，所以不用 `:not([hidden])`；
+- 旧解析组件的视频块 `li.video-item`，开通入口是会员遮罩 `.question-video-member`；
+- 旧解析组件的申论会员内容块 `.member-solution-accessory`，开通入口是 `.nav-btn`（「立即开通」）。
+
+第一条在真实页面上核对过；后两条只读过站点脚本的模板，没找到不替用户开始一次练习
+就能进入的页面，**未核对**。选择器失配的表现只是那一块照旧显示。
+
+会员看到的页面不变。不是会员但有单题观看权限的账号，站点对那道题不显示会员遮罩，
+视频块照常显示。试卷列表顶上的图例「代表会员可享受此试题的视频解析」和卷子旁的
+小图标**不裁剪**：它没有开通入口，会员靠它分辨哪份卷子有视频讲解。
+
+> ⚠️ 这条规则必须**单独成条**，不能并进 `HIDE_SELECTORS`。不认 `:has()` 的旧 WebView
+> （macOS 12.3 之前的系统 WebView）会把含它的整条规则作废，并进去就连累全部裁剪。
+> 旧系统上的表现只是这两块照旧显示。`tests/js/page-tweaks.test.mjs` 盯着这一点。
 
 **刻意保留可见但不可点**：`a.fenbi-icon-url`（logo）。整块拿掉会让顶栏左端空一截，
 而它原本跳 fenbi.com 首页，属于"离开刷题"的入口。做法是
@@ -608,6 +630,32 @@ Windows / Linux 上的等价行为**未验证**。
 - `a.cube-module-button`（粉笔魔方）**不要加进隐藏列表**：它是实用功能，不是推广位。
   `tests/js/page-tweaks.test.mjs` 的「别误伤」用例按字面盯着这条
 - 该页共 23 个链接，除上表之外没有别的同类推广位
+
+**解析页的视频块（2026-11-27 用内置浏览器实测，已登录、当前考试未开会员，`spa.fenbi.com/ti/exam/solution/<id>`）**：
+
+| 元素 | 实测 | 说明 |
+| --- | --- | --- |
+| `app-result-common > .result-common-container > section.result-common-section` | 每道题 5 个：解析视频 / 解析 / 考点 / 来源 / 笔记；`margin-bottom: 28px` | 视频块就是标题为「解析视频」的那个 section，842×355，`id=section-video-<题目 id>` |
+| `app-solution-video > .solution-video-container > .member-container` | 15 道题里 7 道有视频块，7 个都带 `.member-container` | 会员遮罩：「粉笔 职测 会员 / N人已开通」+ `.member-btn` |
+
+- 藏掉视频块后，同一道题的「解析」正好顶到视频块原来的位置，不留空白
+  （临时注入同一条规则实测：命中 7 个，可见的 `app-solution-video` 从 7 变 0）
+- 站点脚本里 `.member-container` 的渲染条件是「不是会员 **且** 没有这道题的观看权限」，
+  所以会员账号下选择器不命中。**这一条来自脚本模板，没有用会员账号实测**
+- `.member-btn` 点了是站点自己开的会员弹窗，不是导航
+- 这一页的 WebView 支持 `:has()`（`CSS.supports("selector(li:has(a))")` 为真）
+
+**/tiku 下旧解析组件的会员相关结构（2026-11-27 读站点当日的脚本模板得到；真实页面未核对）**：
+
+| 元素 | 站点模板里的规则 | 说明 |
+| --- | --- | --- |
+| `li.video-item` | `display` 由站点按「这道题有没有视频」设成 `flex` / `none` | 视频块，出现在 `app-fb-practice-solution` 与 `app-fb-solution` 两个组件里 |
+| `.question-video-member` | `hidden` = 当前考试的会员 **或** 这道题有观看权限 | 会员遮罩，在 `.video-item-content` 内，盖在视频封面上 |
+| `.member-solution-accessory` | 有申论附加内容时才渲染 | 申论会员内容块，组件 `app-member-solution-accessory` |
+| `.member-solution-accessory .nav-btn` | `hidden` = 当前考试的会员 | 「立即开通」按钮 |
+
+- 会员按考试类型分（职测、申论等各算各的），状态来自站点接口
+  `/ke/v3/members/home_members`，只在站点内存里，不写进页面。包装层不读它
 
 ---
 

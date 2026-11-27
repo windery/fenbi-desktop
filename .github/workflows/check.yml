@@ -17,6 +17,51 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: 判断是否需要跨平台编译
+    runs-on: ubuntu-22.04
+    outputs:
+      compile: ${{ steps.diff.outputs.compile }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: diff
+        name: 检查改动范围
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # 推送比较前后两棵树；PR 只看分叉后的改动，不计入基线独有的提交。
+          range="$BASE..$HEAD_SHA"
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            range="$BASE...$HEAD_SHA"
+          fi
+
+          paths=$(mktemp)
+          trap 'rm -f -- "$paths"' EXIT
+          compile=true
+          # 无法比较或改动为空时保留编译。禁用重命名识别，逐一检查旧/新路径。
+          if [[ "$BASE" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] &&
+             git diff --no-renames --name-only -z "$range" -- > "$paths" &&
+             [[ -s "$paths" ]]; then
+            compile=false
+            while IFS= read -r -d '' path; do
+              case "$path" in
+                AGENTS.md|CLAUDE.md|README.md|CONTRIBUTING.md|GLOSSARY.md|tests/README.md|docs/*.md|docs/*.png|docs/*.jpg|docs/*.jpeg)
+                  ;;
+                *)
+                  compile=true
+                  break
+                  ;;
+              esac
+            done < "$paths"
+          fi
+          echo "compile=$compile" >> "$GITHUB_OUTPUT"
+
   test:
     name: 检查与测试
     runs-on: ubuntu-22.04
@@ -72,6 +117,9 @@ jobs:
   # 所以在这里顺手跑一遍成本很低。这不等于 UI 冒烟测试：真机运行验证见
   # CONTRIBUTING.md「平台支持」。
   compile:
+    needs: changes
+    # 仅在明确判定为纯文档时跳过；判定步骤失败也不能漏掉编译。
+    if: ${{ !cancelled() && needs.changes.outputs.compile != 'false' }}
     name: 编译与测试（${{ matrix.label }}）
     runs-on: ${{ matrix.platform }}
     strategy:
