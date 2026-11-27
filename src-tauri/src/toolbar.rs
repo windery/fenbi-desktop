@@ -77,7 +77,7 @@ pub fn local_url_allowed(url: &tauri::Url) -> bool {
         && matches!(url.path(), "" | "/" | "/index.html")
 }
 
-fn require_toolbar(label: &str) -> Result<(), String> {
+pub(crate) fn require_toolbar(label: &str) -> Result<(), String> {
     if label == TOOLBAR {
         Ok(())
     } else {

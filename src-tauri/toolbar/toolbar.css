@@ -247,8 +247,148 @@ html, body {
   color: #18181b;
 }
 
+.fenbi-settings ::selection {
+  background: #dbe8ff;
+}
+
+/* 一组设置：组名加一张卡片（DESIGN.md「页面骨架」「卡片」）。 */
+.fenbi-settings-group {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #6b6b74;
+}
+
+.fenbi-card {
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(24, 24, 27, .11), 0 1px 2px rgba(24, 24, 27, .06);
+}
+
+.fenbi-card-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 72px;
+  padding: 0 20px;
+}
+
+.fenbi-card-icon {
+  flex: none;
+  width: 40px;
+  height: 40px;
+}
+
+.fenbi-card-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.fenbi-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #18181b;
+}
+
+.fenbi-card-sub {
+  min-height: 1.5em;
+  color: #52525b;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 附加行：检查结果。圆点在 40px 图标那一列里靠左，和图标左缘对齐。 */
+.fenbi-result {
+  min-height: 56px;
+  border-top: 1px solid #ececee;
+  font-variant-numeric: tabular-nums;
+}
+
+.fenbi-result-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.fenbi-result[data-kind="ok"] .fenbi-result-dot { background: #16a34a; }
+.fenbi-result[data-kind="update"] .fenbi-result-dot { background: #285fb8; }
+.fenbi-result[data-kind="error"] .fenbi-result-dot { background: #dc2626; }
+
+.fenbi-result-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.fenbi-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(24, 24, 27, .14), 0 1px 1px rgba(24, 24, 27, .05);
+  color: #18181b;
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease-out;
+}
+
+.fenbi-btn:hover {
+  background: #f4f4f5;
+}
+
+.fenbi-btn:focus-visible {
+  outline: 2px solid #285fb8;
+  outline-offset: 2px;
+}
+
+.fenbi-btn-primary {
+  background: #285fb8;
+  box-shadow: none;
+  color: #fff;
+}
+
+.fenbi-btn-primary:hover {
+  background: #2457a3;
+}
+
+.fenbi-btn[aria-disabled="true"] {
+  background: #f4f4f5;
+  color: #52525b;
+  cursor: default;
+}
+
+/* 文字会变的按钮宽度固定，文字变了按钮不动。 */
+.fenbi-check {
+  width: 140px;
+  padding: 0;
+}
+
+.fenbi-spinner {
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid #c5ccd6;
+  border-top-color: #52525b;
+  border-radius: 50%;
+  animation: fenbi-spin 800ms linear infinite;
+}
+
+@keyframes fenbi-spin {
+  to { rotate: 1turn; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .fenbi-toolbar-btn,
   .fenbi-toolbar-toggle,
-  .fenbi-settings-back { transition: none; }
+  .fenbi-settings-back,
+  .fenbi-btn { transition: none; }
+  .fenbi-spinner { animation: none; }
 }

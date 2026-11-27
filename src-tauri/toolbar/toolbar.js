@@ -16,6 +16,13 @@
   var hasUpdate = false;
   var settingsOpen = false;
   var settingsPage = null;
+  /* 「版本与更新」卡片的状态。check 只管手动检查：idle / checking / ok / error；
+     已知的新版记在 newerVersion，启动时查到的和手动查到的都算。 */
+  var currentVersion = "";
+  var newerVersion = null;
+  var check = "idle";
+  var checkRun = 0;
+  var card = null;
   var status = null;
   var toggleLabel = null;
   var hintText = "";
@@ -199,8 +206,107 @@
     head.appendChild(back);
     head.appendChild(title);
     column.appendChild(head);
+    column.appendChild(buildUpdateGroup());
     page.appendChild(column);
     return page;
+  }
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    node.className = className;
+    if (text) node.textContent = text;
+    return node;
+  }
+
+  /* 「版本与更新」一组：组名加一张卡片。会变的部分留在 card 里，由 paintCard 填。 */
+  function buildUpdateGroup() {
+    var group = el("section", "fenbi-settings-section");
+    group.appendChild(el("h2", "fenbi-settings-group", "版本与更新"));
+    var box = el("div", "fenbi-card");
+    var row = el("div", "fenbi-card-row");
+    var image = el("img", "fenbi-card-icon");
+    image.setAttribute("src", "app-icon.png");
+    image.setAttribute("alt", "");
+    image.setAttribute("width", "40");
+    image.setAttribute("height", "40");
+    var text = el("div", "fenbi-card-text");
+    text.appendChild(el("div", "fenbi-card-name", "粉笔刷题"));
+    var version = text.appendChild(el("div", "fenbi-card-sub"));
+    var button = el("button", "fenbi-btn fenbi-check");
+    button.setAttribute("type", "button");
+    button.addEventListener("click", checkUpdate);
+    row.appendChild(image);
+    row.appendChild(text);
+    row.appendChild(button);
+    box.appendChild(row);
+    /* 结果行的容器一直在，读屏软件才会在结果出来时播报。 */
+    var slot = box.appendChild(el("div", "fenbi-result-slot"));
+    slot.setAttribute("role", "status");
+    group.appendChild(box);
+    card = { version: version, button: button, slot: slot };
+    paintCard();
+    return group;
+  }
+
+  var RESULTS = {
+    ok: "已是最新版本",
+    error: "检查更新失败，请稍后再试",
+  };
+
+  function paintCard() {
+    if (!card) return;
+    card.version.textContent = currentVersion ? "当前版本 v" + currentVersion : "";
+    var checking = check === "checking";
+    card.button.textContent = "";
+    if (checking) {
+      var spinner = card.button.appendChild(el("span", "fenbi-spinner"));
+      spinner.setAttribute("aria-hidden", "true");
+    }
+    card.button.appendChild(el("span", "", checking ? "正在检查更新…" : "检查更新"));
+    card.button.setAttribute("aria-disabled", checking ? "true" : "false");
+
+    var kind = RESULTS[check] ? check : newerVersion && !checking ? "update" : null;
+    card.slot.textContent = "";
+    if (!kind) return;
+    var row = card.slot.appendChild(el("div", "fenbi-card-row fenbi-result"));
+    row.setAttribute("data-kind", kind);
+    row.appendChild(el("span", "fenbi-result-dot")).setAttribute("aria-hidden", "true");
+    row.appendChild(el("span", "fenbi-result-text", RESULTS[kind] || "发现新版本 v" + newerVersion));
+    if (kind !== "update") return;
+    var download = row.appendChild(el("button", "fenbi-btn fenbi-btn-primary fenbi-download", "下载新版 v" + newerVersion));
+    download.setAttribute("type", "button");
+    download.addEventListener("click", function () {
+      clearError();
+      call("open_release_page").catch(report);
+    });
+  }
+
+  /* 打开设置页面时读一次版本号。上一次留下的「已是最新」「失败」不带进来。 */
+  function loadSettingsInfo() {
+    check = "idle";
+    checkRun++;
+    call("settings_info").then(function (info) {
+      currentVersion = info[0];
+      newerVersion = info[1] || null;
+      paintCard();
+    }).catch(function (error) {
+      console.error("版本号读取失败", error);
+    });
+  }
+
+  function checkUpdate() {
+    if (check === "checking") return;
+    var run = ++checkRun;
+    check = "checking";
+    paintCard();
+    call("check_update").then(function (found) {
+      if (found) newerVersion = found;
+      if (run !== checkRun) return;
+      check = found ? "idle" : "ok";
+    }, function (error) {
+      console.error("检查更新失败", error);
+      if (run === checkRun) check = "error";
+    }).then(paintCard);
   }
 
   function toggleButton(state, mac) {
@@ -236,8 +342,16 @@
     toggleLabel = null;
     host.setAttribute("data-fenbi-toolbar", state);
     bar.textContent = "";
-    if (settingsPage) host.removeChild(settingsPage);
-    settingsPage = state === "expanded" && settingsOpen ? host.appendChild(buildSettingsPage()) : null;
+    /* 设置页面开着时不重画它：重画会丢掉键盘焦点和正在显示的检查结果。 */
+    var wantSettings = state === "expanded" && settingsOpen;
+    if (settingsPage && !wantSettings) {
+      host.removeChild(settingsPage);
+      settingsPage = null;
+      card = null;
+    } else if (wantSettings && !settingsPage) {
+      settingsPage = host.appendChild(buildSettingsPage());
+      loadSettingsInfo();
+    }
     if (state === "loading") {
       var loading = document.createElement("span");
       loading.className = "fenbi-toolbar-loading";

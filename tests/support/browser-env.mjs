@@ -572,6 +572,26 @@ export function createEnv(options = {}) {
       return document.querySelectorAll(".fenbi-settings-back")[0] ?? null;
     },
 
+    /** 设置页面里「版本与更新」那张卡片。 */
+    settingsCard() {
+      return document.querySelectorAll(".fenbi-card")[0] ?? null;
+    },
+
+    /** 卡片第一行右边的「检查更新」按钮。 */
+    settingsCheck() {
+      return document.querySelectorAll(".fenbi-check")[0] ?? null;
+    },
+
+    /** 卡片第二行（检查结果）；没有结果时不存在。 */
+    settingsResult() {
+      return document.querySelectorAll(".fenbi-result")[0] ?? null;
+    },
+
+    /** 结果行右边的「下载新版」按钮；只有发现新版本时存在。 */
+    settingsDownload() {
+      return document.querySelectorAll(".fenbi-download")[0] ?? null;
+    },
+
     /** 从按钮的无障碍名称读取快捷键；可见提示在悬停/聚焦时显示在栏内。 */
     hintText(button) {
       return button?.getAttribute("aria-label")?.match(/\(([^)]+)\)$/)?.[1] ?? null;

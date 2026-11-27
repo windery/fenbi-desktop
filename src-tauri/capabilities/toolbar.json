@@ -9,6 +9,9 @@
     "allow-toolbar-action",
     "allow-toolbar-state",
     "allow-toggle-toolbar",
-    "allow-toggle-settings"
+    "allow-toggle-settings",
+    "allow-settings-info",
+    "allow-check-update",
+    "allow-open-release-page"
   ]
 }

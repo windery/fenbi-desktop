@@ -250,6 +250,100 @@ test("设置页面关掉后，设置页面的内容消失，按钮恢复可用",
   assert.deepEqual(env.calls.at(-1), { command: "toolbar_action", args: { action: "back" } });
 });
 
+/* 设置页面开着的工具栏。`newer` 是启动时已经查到的新版；`check` 决定点「检查更新」后 Rust 怎么答。 */
+async function bootSettings({ current = "0.1.3", newer = null, check } = {}) {
+  const view = { open: true, revision: 0 };
+  const env = await bootToolbar({
+    invoke(command) {
+      if (command === "toolbar_state") return Promise.resolve([++view.revision, false, newer !== null, view.open]);
+      if (command === "settings_info") return Promise.resolve([current, newer]);
+      if (command === "check_update") return check();
+      return Promise.resolve(null);
+    },
+  });
+  await settle();
+  return Object.assign(env, { view });
+}
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+const sent = (env, command) => env.calls.filter((call) => call.command === command);
+
+test("设置页面有「版本与更新」一组：应用名、当前版本号、「检查更新」按钮，没有结果行", async () => {
+  const env = await bootSettings({ current: "0.1.3" });
+  const group = env.document.querySelector(".fenbi-settings-group");
+  assert.equal(group.tagName, "H2");
+  assert.equal(group.textContent, "版本与更新");
+  const card = env.settingsCard();
+  assert.match(card.textContent, /粉笔刷题/);
+  assert.match(card.textContent, /当前版本 v0\.1\.3/);
+  assert.equal(env.settingsCheck().textContent, "检查更新");
+  assert.equal(env.settingsResult(), null);
+  assert.equal(env.settingsDownload(), null);
+  assert.deepEqual(sent(env, "check_update"), [], "打开设置页面不自己联网");
+});
+
+test("启动时已经查到新版：打开设置页面就有「发现新版本」和「下载新版」", async () => {
+  const env = await bootSettings({ newer: "0.1.4" });
+  assert.equal(env.settingsResult().getAttribute("data-kind"), "update");
+  assert.match(env.settingsResult().textContent, /发现新版本 v0\.1\.4/);
+  assert.equal(env.settingsDownload().textContent, "下载新版 v0.1.4");
+  assert.deepEqual(sent(env, "check_update"), []);
+});
+
+test("点「检查更新」只发一次检查命令；等待中按钮禁用、写着「正在检查更新…」，再点不再发", async () => {
+  let answer;
+  const env = await bootSettings({ check: () => new Promise((resolve) => { answer = resolve; }) });
+  env.settingsCheck().click();
+  assert.deepEqual(sent(env, "check_update"), [{ command: "check_update", args: undefined }]);
+  assert.equal(env.settingsCheck().getAttribute("aria-disabled"), "true");
+  assert.equal(env.settingsCheck().textContent, "正在检查更新…");
+  env.settingsCheck().click();
+  assert.equal(sent(env, "check_update").length, 1);
+  answer(null);
+  await settle();
+  assert.equal(env.settingsCheck().getAttribute("aria-disabled"), "false");
+  assert.equal(env.settingsCheck().textContent, "检查更新");
+});
+
+test("检查更新的三种结果各有一行；只有发现新版本带下载按钮", async () => {
+  for (const [check, kind, text, download] of [
+    [() => Promise.resolve(null), "ok", "已是最新版本", null],
+    [() => Promise.resolve("0.2.0"), "update", "发现新版本 v0.2.0", "下载新版 v0.2.0"],
+    [() => Promise.reject(new Error("超时")), "error", "检查更新失败，请稍后再试", null],
+  ]) {
+    const env = await bootSettings({ check });
+    env.settingsCheck().click();
+    await settle();
+    assert.equal(env.settingsResult().getAttribute("data-kind"), kind, text);
+    assert.equal(env.settingsResult().textContent.replace(download ?? "", ""), text);
+    assert.equal(env.settingsDownload()?.textContent ?? null, download, text);
+    assert.equal(env.document.querySelector(".fenbi-toolbar-status").textContent, "", "工具栏不出字");
+  }
+});
+
+test("点「下载新版」只发一次打开发布页的命令，不带任何网址", async () => {
+  const env = await bootSettings({ newer: "0.1.4" });
+  const before = env.calls.length;
+  env.settingsDownload().click();
+  assert.deepEqual(env.calls.slice(before), [{ command: "open_release_page", args: undefined }]);
+  assert.deepEqual(env.navigations, [], "不能在工具栏 WebView 自身导航");
+});
+
+test("关掉设置页面再打开，「已是最新版本」和「检查更新失败」不再显示", async () => {
+  for (const check of [() => Promise.resolve(null), () => Promise.reject(new Error("超时"))]) {
+    const env = await bootSettings({ check });
+    env.settingsCheck().click();
+    await settle();
+    assert.ok(env.settingsResult());
+    env.view.open = false;
+    await env.refreshToolbar();
+    env.view.open = true;
+    await env.refreshToolbar();
+    await settle();
+    assert.ok(env.settingsCard());
+    assert.equal(env.settingsResult(), null);
+  }
+});
+
 /* 把按钮上显示出来的键位文字，按"用户读标签、照着自己按"的方式翻成事件。
  * 只做字形 → 事件字段的映射，不复制生产代码的匹配逻辑。 */
 const MOD_GLYPHS = ["⌘", "⌃", "⌥", "⇧", "Ctrl", "Alt", "Shift"];

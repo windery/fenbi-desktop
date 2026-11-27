@@ -30,6 +30,8 @@ tauri-plugin-single-instance = "=2.4.5"
 # 检查更新只发一个 HTTPS GET（见 update.rs）。同步客户端，放在后台线程里调；
 # 关掉默认 feature，只留 rustls，三个平台行为一致。
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+# 「下载新版」让系统浏览器打开发布页（见 update.rs 的 open_release_page），只开那一个写死的网址。
+open = "5"
 # 比较版本号。tauri 自己已经依赖它，不多编一份。
 semver = "1"
 

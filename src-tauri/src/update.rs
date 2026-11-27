@@ -3,6 +3,7 @@
 //! 只读一个版本号。不下载、不安装，结果只活在内存里。
 //! 请求的是发布页网址本身：GitHub 用一次跳转回答，跳转地址末尾就是最新发布的 tag。
 //! 草稿和预发布不会成为这个跳转的目标。
+use super::toolbar::require_toolbar;
 use semver::Version;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -22,6 +23,11 @@ pub struct UpdateState {
 impl UpdateState {
     pub fn has_update(&self) -> bool {
         self.newer.lock().is_ok_and(|v| v.is_some())
+    }
+
+    /// 已知的新版本号（不带 `v`）；没有就是空。
+    pub fn newer_version(&self) -> Option<String> {
+        self.newer.lock().ok()?.as_ref().map(Version::to_string)
     }
 
     /// 记下一次检查的结果，返回这次是否查到了新版。
@@ -71,6 +77,65 @@ fn check_url() -> String {
         return url;
     }
     RELEASES_URL.into()
+}
+
+/// 用户点「检查更新」时查一次：查到比本机新的就记下并返回它的版本号，没有新版返回空。
+fn check_now(
+    state: &UpdateState,
+    current: &Version,
+    url: &str,
+    timeout: Duration,
+) -> Result<Option<String>, String> {
+    let latest = fetch_latest(url, &format!("fenbi-desktop/{current}"), timeout)?;
+    let version = latest.to_string();
+    Ok(state.record(current, latest).then_some(version))
+}
+
+/// 设置页面要显示的两个版本号：本机的，和已知的新版（没有就是空）。
+#[tauri::command]
+pub fn settings_info(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+    updates: tauri::State<'_, UpdateState>,
+) -> Result<(String, Option<String>), String> {
+    require_toolbar(webview.label())?;
+    Ok((
+        app.package_info().version.to_string(),
+        updates.newer_version(),
+    ))
+}
+
+/// 「检查更新」按钮。联网放在后台线程，查到新版就让工具栏补上红点。
+#[tauri::command]
+pub async fn check_update(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    require_toolbar(webview.label())?;
+    let handle = app.clone();
+    let found = tauri::async_runtime::spawn_blocking(move || {
+        let current = handle.package_info().version.clone();
+        check_now(
+            &handle.state::<UpdateState>(),
+            &current,
+            &check_url(),
+            TIMEOUT,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .inspect_err(|e| eprintln!("[fenbi-wrapper] 检查更新失败：{e}"))?;
+    if found.is_some() {
+        let _ = webview.eval("window.__fenbiRefreshToolbar && window.__fenbiRefreshToolbar();");
+    }
+    Ok(found)
+}
+
+/// 「下载新版」按钮：让系统浏览器打开发布页。网址写死，界面传不进别的。
+#[tauri::command]
+pub fn open_release_page(webview: tauri::Webview) -> Result<(), String> {
+    require_toolbar(webview.label())?;
+    open::that_detached(RELEASES_URL).map_err(|e| e.to_string())
 }
 
 /// 启动时查一次。在后台线程里跑，失败不出提示。
@@ -173,6 +238,59 @@ mod tests {
             fetch_latest(&url, "fenbi-desktop/test", Duration::from_secs(2)),
             Ok(v("9.9.9"))
         );
+    }
+
+    #[test]
+    fn a_manual_check_reports_and_remembers_only_a_newer_version() {
+        const NEWER: &str = "HTTP/1.1 302 Found\r\nLocation: /windery/fenbi-desktop/releases/tag/v0.1.4\r\nContent-Length: 0\r\n\r\n";
+        const SAME: &str = "HTTP/1.1 302 Found\r\nLocation: /windery/fenbi-desktop/releases/tag/v0.1.3\r\nContent-Length: 0\r\n\r\n";
+        let timeout = Duration::from_secs(2);
+
+        let state = UpdateState::default();
+        let found = check_now(
+            &state,
+            &v("0.1.3"),
+            &fake_release_page(Some(NEWER)),
+            timeout,
+        );
+        assert_eq!(found, Ok(Some("0.1.4".to_string())));
+        assert_eq!(state.newer_version(), Some("0.1.4".to_string()));
+
+        let state = UpdateState::default();
+        let found = check_now(&state, &v("0.1.3"), &fake_release_page(Some(SAME)), timeout);
+        assert_eq!(found, Ok(None));
+        assert_eq!(state.newer_version(), None);
+    }
+
+    /// 三个设置页面命令只授权给工具栏页面；粉笔页面拿到的授权里一个都没有。
+    #[test]
+    fn the_website_is_granted_none_of_the_settings_commands() {
+        let website = [
+            include_str!("../capabilities/default.json"),
+            include_str!("../capabilities/dev/loopback.json"),
+        ];
+        let toolbar = include_str!("../capabilities/toolbar.json");
+        for permission in [
+            "allow-settings-info",
+            "allow-check-update",
+            "allow-open-release-page",
+        ] {
+            assert!(toolbar.contains(permission), "{permission}");
+            assert!(
+                website.iter().all(|c| !c.contains(permission)),
+                "{permission}"
+            );
+        }
+        assert!(require_toolbar(crate::toolbar::CONTENT).is_err());
+    }
+
+    #[test]
+    fn a_failed_manual_check_is_an_error_and_keeps_what_was_known() {
+        let state = UpdateState::default();
+        state.record(&v("0.1.3"), v("0.1.4"));
+        let url = fake_release_page(Some("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"));
+        assert!(check_now(&state, &v("0.1.3"), &url, Duration::from_secs(2)).is_err());
+        assert_eq!(state.newer_version(), Some("0.1.4".to_string()));
     }
 
     #[test]
