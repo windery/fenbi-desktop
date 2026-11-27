@@ -613,11 +613,8 @@ Windows / Linux 上的等价行为**未验证**。
 
 ## 待做
 
-待做项以 GitHub Issues 为准，本文件不再维护列表：
+待做项以 `docs/issues/` 下的本地议题为准，本文件不再维护列表。每个文件第二行的 `状态：` 写明能不能交给 agent（`ready-for-agent`）或需要真机和人判断（`ready-for-human`）。用户反馈仍从 [GitHub Issues](https://github.com/windery/fenbi-desktop/issues) 进来。
 
-<https://github.com/windery/fenbi-desktop/issues>
-
-按状态筛：`gh issue list --label ready-for-agent`（可交给 agent）、`--label ready-for-human`（需要真机或人判断）。
 断网冷启动时三平台的表现，以及为什么目前不做加载失败提示，见 [docs/research/2026-11-05-load-failure-signal.md](docs/research/2026-11-05-load-failure-signal.md)。
 
 issue 跟踪器的操作约定见 `docs/agents/issue-tracker.md`。

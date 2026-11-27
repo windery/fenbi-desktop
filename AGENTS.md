@@ -40,13 +40,13 @@
 
 - 使用说明与安装：[README.md](README.md)
 - 实现细节、站点事实、排查手册、发布流程：[CONTRIBUTING.md](CONTRIBUTING.md)
-- 待办与优先级：GitHub Issues（`gh issue list`），操作约定见 `docs/agents/issue-tracker.md`
+- 待办与优先级：`docs/issues/` 下的本地议题，操作约定见 `docs/agents/issue-tracker.md`
 
 ## Agent skills
 
 ### Issue tracker
 
-Issues live in this repo's GitHub Issues, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues live as Markdown files in `docs/issues/`. GitHub Issues are only the inbox for user feedback. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
