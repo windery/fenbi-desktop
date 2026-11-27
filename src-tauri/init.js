@@ -144,6 +144,35 @@
     "a.fenbi-icon-url", // 粉笔 logo -> 原本跳 fenbi.com 首页
   ];
 
+  /* E 类：站点正在显示「开通入口」的那一块，整块移除。
+   *
+   * 规则只有一条：一块内容里，站点画出了点了会去买会员的按钮或遮罩，就把这
+   * 一整块藏掉；没有就不动。包装层不读账号、不调站点接口——站点自己决定
+   * 开通入口显不显示，账号有权看时它不出现（或带 `hidden` 属性）。
+   *
+   * 解析页有两套前端，各写各的选择器：
+   *
+   * spa.fenbi.com/ti/exam/solution/…（真实页面核对过，非会员账号）：
+   *   SECTION.result-common-section  视频块，标题「解析视频」
+   *     └ APP-SOLUTION-VIDEO
+   *         └ .member-container      会员遮罩「粉笔 xx 会员 / N人已开通」+ 开通按钮；
+   *                                  站点只在「不是会员且没有这道题的观看权限」时渲染它
+   *
+   * /tiku 下的旧解析组件（只读过站点脚本的模板，真实页面未核对）：
+   *   LI.video-item                  视频块（没有视频的题，站点自己 display:none）
+   *     └ .question-video-member     会员遮罩「会员专享…立即开通」，有权看时带 hidden
+   *   .member-solution-accessory     申论会员内容块
+   *     └ .nav-btn                   「立即开通」，会员时带 hidden
+   *
+   * ⚠️ 必须单独成一条规则，不能并进 HIDE_SELECTORS：不认 `:has()` 的旧 WebView
+   *    （macOS 12.3 之前）会把含它的整条规则作废，并进去就连累全部裁剪。
+   *    旧系统上的表现只是这两块照旧显示。 */
+  var UPSELL_BLOCK_SELECTORS = [
+    "section.result-common-section:has(app-solution-video .member-container)",
+    "li.video-item:has(.question-video-member:not([hidden]))",
+    ".member-solution-accessory:has(.nav-btn:not([hidden]))",
+  ];
+
   /* D 类：压掉一部分高度。
    * 页脚外框原本 321px（实测），整块留白太厚，压到一半。
    *
@@ -190,6 +219,9 @@
         "  pointer-events: none !important;\n" +
         "  cursor: default !important;\n" +
         "}\n";
+    }
+    if (UPSELL_BLOCK_SELECTORS.length) {
+      css += UPSELL_BLOCK_SELECTORS.join(",\n") + " { display: none !important; }\n";
     }
     // 压高度 + 去底色（页脚自身是深色底，不去掉的话留白是黑的）
     css += SHRINK_HEIGHT_CSS + "\n";

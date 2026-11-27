@@ -38,6 +38,39 @@ test("会员入口 / 我的课程 / 帮助问号：整块隐藏", async () => {
   }
 });
 
+/* 解析页：站点正在显示开通入口的那一块，整块隐藏。
+   会员账号下站点不渲染开通入口（旧组件是给它加 hidden 属性），选择器就不命中。 */
+const UPSELL_SELECTORS = [
+  "section.result-common-section:has(app-solution-video .member-container)",
+  "li.video-item:has(.question-video-member:not([hidden]))",
+  ".member-solution-accessory:has(.nav-btn:not([hidden]))",
+];
+
+test("解析页：显示着开通入口的视频块 / 申论会员内容块整块隐藏", async () => {
+  const css = tweakCss(await boot({}));
+  for (const selector of UPSELL_SELECTORS) {
+    const body = ruleFor(css, selector);
+    assert.ok(body, `裁剪 CSS 里必须有 ${selector}`);
+    assert.match(body, /display:\s*none/, `${selector} 必须整块隐藏`);
+  }
+});
+
+test("解析页的 :has() 规则单独成条，不拖累其他裁剪", async () => {
+  const css = tweakCss(await boot({}));
+
+  /* 不认 :has() 的旧 WebView 会把含它的**整条规则**作废。
+     所以除了这一条，任何规则的选择器列表里都不能出现 :has()。 */
+  const rules = css.split("}").map((rule) => rule.split("{")[0]);
+  const withHas = rules.filter((selectors) => selectors.includes(":has("));
+  assert.equal(withHas.length, 1, "带 :has() 的规则只能有一条");
+  for (const selector of [".member-area", "nav.fb-web-nav", "a.fenbi-icon-url"]) {
+    assert.ok(
+      !withHas[0].includes(selector),
+      `${selector} 不能和 :has() 写在同一条规则里`
+    );
+  }
+});
+
 test("粉笔 logo：保留可见，只去掉点击", async () => {
   const css = tweakCss(await boot({}));
   const body = ruleFor(css, "a.fenbi-icon-url");
