@@ -58,3 +58,9 @@ Five canonical triage roles, label strings equal to their names. See `docs/agent
 ### Domain docs
 
 Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### 界面设计（项目级安装）
+
+画界面、改样式、评审界面前用 `impeccable`；写 HTML/CSS/前端 JS 前先查 `modern-web-guidance`；`hallmark` 只在点名时用（`/hallmark audit <path>` 查 AI 味），不要拿它改已有设计。本项目的口味以 [DESIGN.md](DESIGN.md) 为准，skill 的默认倾向与它冲突时听 DESIGN.md。
+
+skill 内容不进仓库，版本记在 `skills-lock.json`。新机器或新 worktree 里跑 `npx skills install` 还原。
