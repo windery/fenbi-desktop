@@ -107,8 +107,16 @@ html, body {
   color: #a4262c;
 }
 
+.fenbi-toolbar-settings {
+  margin-left: 8px;
+}
+
 .fenbi-toolbar-toggle {
   margin-left: auto;
+}
+
+.fenbi-toolbar-settings + .fenbi-toolbar-toggle {
+  margin-left: 2px;
 }
 
 [data-fenbi-toolbar='collapsed'] .fenbi-toolbar-toggle {

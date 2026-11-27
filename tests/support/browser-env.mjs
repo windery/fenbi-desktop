@@ -131,6 +131,11 @@ class Element {
     return this.visible ? [{}] : [];
   }
 
+  /* 测试用 `el.rect = {...}` 摆位置；没摆的元素在原点。 */
+  getBoundingClientRect() {
+    return { left: 0, top: 0, right: 0, bottom: 0, ...this.rect };
+  }
+
   get firstChild() {
     return this.children[0] ?? null;
   }
@@ -550,6 +555,11 @@ export function createEnv(options = {}) {
       return document
         .querySelectorAll(".fenbi-toolbar-btn")
         .find((el) => el.getAttribute("data-fenbi-action") === action) ?? null;
+    },
+
+    /** 展开状态右侧的齿轮按钮（设置菜单入口）；收起时不存在。 */
+    toolbarSettings() {
+      return document.querySelectorAll(".fenbi-toolbar-settings")[0] ?? null;
     },
 
     /** 从按钮的无障碍名称读取快捷键；可见提示在悬停/聚焦时显示在栏内。 */

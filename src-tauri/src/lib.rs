@@ -567,6 +567,7 @@ pub fn run() {
             toolbar::toolbar_action,
             toolbar::toolbar_state,
             toolbar::toggle_toolbar,
+            toolbar::open_settings_menu,
             #[cfg(debug_assertions)]
             debug_request_logout,
         ])

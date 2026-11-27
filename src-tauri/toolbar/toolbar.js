@@ -32,6 +32,11 @@
     catalog: ["M3.5 4.5c2.4-.6 4.4-.4 6.5.6v10.8c-2.1-1-4.1-1.2-6.5-.6z", "M16.5 4.5c-2.4-.6-4.4-.4-6.5.6v10.8c2.1-1 4.1-1.2 6.5-.6z"],
     up: ["m5.2 12.4 4.8-4.8 4.8 4.8"],
     down: ["m5.2 7.6 4.8 4.8 4.8-4.8"],
+    settings: [
+      "M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6",
+      "M10 5.2a4.8 4.8 0 1 0 0 9.6 4.8 4.8 0 0 0 0-9.6z",
+      "M10 8.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6z",
+    ],
   };
 
   function icon(name) {
@@ -131,6 +136,23 @@
     return button;
   }
 
+  /* 设置菜单是系统原生菜单，由 Rust 弹出；这里只报出齿轮左下角，让菜单贴着齿轮。 */
+  function settingsButton() {
+    var button = document.createElement("button");
+    button.className = "fenbi-toolbar-btn fenbi-toolbar-settings";
+    button.setAttribute("type", "button");
+    button.setAttribute("title", "设置");
+    button.setAttribute("aria-label", "设置");
+    button.appendChild(icon("settings"));
+    addHintEvents(button, "设置");
+    button.addEventListener("click", function () {
+      clearError();
+      var rect = button.getBoundingClientRect();
+      call("open_settings_menu", { x: rect.left, y: rect.bottom }).catch(report);
+    });
+    return button;
+  }
+
   function toggleButton(state, mac) {
     var expanded = state === "expanded";
     var text = expanded ? "收起" : "展开";
@@ -197,6 +219,7 @@
       status.className = "fenbi-toolbar-status";
       status.setAttribute("role", "status");
       bar.appendChild(status);
+      bar.appendChild(settingsButton());
     }
     bar.appendChild(toggleButton(state, mac));
     paintStatus();

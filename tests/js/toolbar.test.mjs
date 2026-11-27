@@ -114,6 +114,40 @@ test("工具栏按钮只发送指定动作给 Rust", async () => {
   assert.deepEqual(env.navigations, [], "不能在工具栏 WebView 自身导航");
   assert.deepEqual(env.reloads, []);
 });
+
+test("展开时提示区和收起按钮之间有齿轮，悬停提示「设置」", async () => {
+  const env = await bootToolbar();
+  const gear = env.toolbarSettings();
+  assert.ok(gear, "展开时必须有齿轮");
+  const children = env.toolbarBar().children;
+  const status = env.document.querySelector(".fenbi-toolbar-status");
+  assert.deepEqual(children.slice(-3), [status, gear, env.toolbarToggle()]);
+  assert.ok(gear.children.some((child) => child.tagName === "SVG"), "齿轮使用 SVG 图标");
+  assert.equal(gear.textContent.trim(), "", "齿轮里不显示常驻文案");
+  assert.equal(gear.getAttribute("aria-label"), "设置");
+  gear.dispatch("mouseenter");
+  assert.equal(status.textContent, "设置");
+});
+
+test("收起时没有齿轮", async () => {
+  const env = await bootToolbar({ invoke: () => Promise.resolve([4, true]) });
+  assert.equal(env.toolbarState(), "collapsed");
+  assert.equal(env.toolbarSettings(), null);
+});
+
+test("点齿轮只向 Rust 发打开设置菜单这一个命令，并带上齿轮左下角的位置", async () => {
+  const env = await bootToolbar();
+  const gear = env.toolbarSettings();
+  gear.rect = { left: 1108, bottom: 33 };
+  const before = env.calls.length;
+  gear.click();
+  assert.deepEqual(env.calls.slice(before), [
+    { command: "open_settings_menu", args: { x: 1108, y: 33 } },
+  ]);
+  assert.deepEqual(env.navigations, [], "不能在工具栏 WebView 自身导航");
+  assert.deepEqual(env.reloads, []);
+});
+
 /* 把按钮上显示出来的键位文字，按"用户读标签、照着自己按"的方式翻成事件。
  * 只做字形 → 事件字段的映射，不复制生产代码的匹配逻辑。 */
 const MOD_GLYPHS = ["⌘", "⌃", "⌥", "⇧", "Ctrl", "Alt", "Shift"];

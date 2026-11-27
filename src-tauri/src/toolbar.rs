@@ -111,6 +111,48 @@ pub async fn toolbar_action(
     content.set_focus().map_err(|e| e.to_string())
 }
 
+/// 设置菜单：系统原生菜单，贴着齿轮弹出。36 高的工具栏 WebView 里画不下网页下拉面板。
+/// `x` / `y` 是齿轮左下角在工具栏 WebView 里的逻辑坐标；工具栏贴着窗口左上角，
+/// 所以也就是相对窗口的坐标。
+#[tauri::command]
+pub async fn open_settings_menu(
+    webview: Webview,
+    x: f64,
+    y: f64,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    require_toolbar(webview.label())?;
+    let (x, y) = menu_position(x, y)?;
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let show = || -> tauri::Result<()> {
+            let label = version_label(&handle.package_info().version.to_string());
+            let version = tauri::menu::MenuItem::new(&handle, label, false, None::<&str>)?;
+            let menu = tauri::menu::Menu::with_items(&handle, &[&version])?;
+            match handle.get_window(super::WINDOW_LABEL) {
+                Some(window) => window.popup_menu_at(&menu, tauri::LogicalPosition::new(x, y)),
+                None => Ok(()),
+            }
+        };
+        if let Err(e) = show() {
+            eprintln!("[fenbi-wrapper] settings menu: {e}");
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+fn version_label(version: &str) -> String {
+    format!("版本 v{version}")
+}
+
+fn menu_position(x: f64, y: f64) -> Result<(f64, f64), String> {
+    if x.is_finite() && y.is_finite() && x >= 0.0 && y >= 0.0 {
+        Ok((x, y))
+    } else {
+        Err("设置菜单的位置无效".into())
+    }
+}
+
 fn action_script(action: &str, target: &str) -> Result<String, String> {
     match action {
         "back" => Ok("history.back()".into()),
@@ -227,6 +269,17 @@ mod tests {
         assert!(require_toolbar("other").is_err());
         assert!(require_toolbar(TOOLBAR).is_ok());
         assert!(action_script("eval", "https://www.fenbi.com").is_err());
+    }
+    #[test]
+    fn settings_menu_shows_the_running_version() {
+        assert_eq!(version_label("0.1.3"), "版本 v0.1.3");
+    }
+    #[test]
+    fn settings_menu_position_must_be_a_finite_point_in_the_window() {
+        assert_eq!(menu_position(1108.0, 33.0), Ok((1108.0, 33.0)));
+        assert!(menu_position(f64::NAN, 33.0).is_err());
+        assert!(menu_position(1108.0, f64::INFINITY).is_err());
+        assert!(menu_position(-1.0, 33.0).is_err());
     }
     #[test]
     fn catalog_action_encodes_url_as_data_and_keeps_history() {
