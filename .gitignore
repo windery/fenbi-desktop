@@ -26,3 +26,4 @@ dist-ssr
 # Agent skills（内容本地安装，版本记在 skills-lock.json）
 .claude/skills/
 .agents/
+.hallmark/
