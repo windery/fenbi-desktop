@@ -3,7 +3,7 @@ use std::path::Path;
 fn main() {
     // ── 开发期的脚本热加载 ─────────────────────────────────────────────
     //
-    // `init.js` / `init-debug.js` 原本用 `include_str!` 编译进二进制，
+    // 注入脚本（`init.js` 等）原本用 `include_str!` 编译进二进制，
     // 于是每改一行脚本都要重跑一次 release 编译（LTO 下一分半）。
     //
     // 这里把它们拷贝一份到 target 下，debug 构建改成运行时从磁盘读，
@@ -16,7 +16,12 @@ fn main() {
         .expect("无法定位 target 目录")
         .to_path_buf();
 
-    for name in ["init.js", "init-debug.js", "toolbar/shortcuts.js"] {
+    for name in [
+        "init.js",
+        "init-debug.js",
+        "highlight.js",
+        "toolbar/shortcuts.js",
+    ] {
         let src = Path::new(name);
         println!("cargo:rerun-if-changed={name}");
         let dest = dest_dir.join(Path::new(name).file_name().unwrap());

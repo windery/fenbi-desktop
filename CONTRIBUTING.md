@@ -120,6 +120,7 @@ wrapper **只负责**：
 1. 启动时把窗口落到题库目录页
 2. 裁剪与刷题无关的页面元素（只注入 CSS）
 3. 在用户即将需要时**点击站点自己的登录入口按钮**，把站点的登录框带出来
+4. 在做题页提供划词标记：只叠底色，不改站点结构、不读题目数据、不落盘（见下文「做题页的划词标记」与 `docs/adr/0004`）
 
 wrapper **不碰站点的业务逻辑**：
 
@@ -377,12 +378,47 @@ Rust 负责布局和受限命令；网站仍由 `init.js` 注入快捷键与裁�
 `keydown` 处理会 preventDefault（全部 3.55MB JS 完整检查过）。
 注意不能用 `location.reload(true)` 做硬刷新——那个参数已废弃、会被静默忽略。
 
+### 做题页的划词标记
+
+`src-tauri/highlight.js` 是独立的注入脚本，`lib.rs` 把它和 `init.js` 一起拼进 `initialization_script`，
+每个粉笔页面都带；它在每次按键时按当前路径判断是不是做题页（站点是 SPA，换页不重载），不是就什么都不做、不拦键。
+做题页写死成真实页面上核实过的两种：`spa.fenbi.com` 上的 `/ti/exam/exercise/<id>` 和 `/ti/memorize/<id>`，路径必须正好带一个 id
+（允许结尾的 `/` 和查询串；别的粉笔子域、没有 id、多一级子路径都不算），见「已验证的站点事实」。
+
+| 按键 | 条件 | 效果 |
+| --- | --- | --- |
+| `H` | 有选区 | 标成第 1 种颜色，然后取消选区；选区正好是已标的一处时换下一种颜色。选区两端不在同一道题（`app-ti`）里、或有一端在题外（例如全选）时不标、不拦，选区留着 |
+| `H` | 没有选区、鼠标停在一处标记上 | 这一处换下一种颜色（3 色循环） |
+| `Delete` / `Backspace` | 鼠标停在一处标记上 | 删掉这一处 |
+| `Shift+Delete` / `Shift+Backspace` | 鼠标在一道题（`app-ti`）上 | 清掉这道题的全部标记；页面上一个 `app-ti` 都没有（站点改版）时清掉本页全部标记 |
+
+- **画法**：只用 CSS Custom Highlight API。3 个 `Highlight` 各管一种颜色（`fenbi-mark-1..3`），
+  悬停的那一处另外登记进优先级更高的 `fenbi-mark-hover`，只加一条下划线。第一次标记时往页面加一条
+  `<style data-fenbi-wrapper="highlight">`，里面只有这 4 条 `::highlight()` 规则；不插别的元素、不改站点节点。
+- **颜色**：`#ffd8a8`（浅橙）、`#c3f0c8`（浅绿）、`#ffc9de`（浅粉），文字固定成 `#1f2328`。
+  避开站点的蓝色选中态和站点自带划线库的 `#ff9` 黄；字色固定是为了站点切深色主题时照样读得清。
+- **为什么标完要取消选区**：浏览器把选中态画在自定义高亮上面，选区不取消就看不见标成了什么颜色。
+  所以「再按 H 换色」改成鼠标停在那一处上按 H；重新选中同一段再按 H 也能换色。
+- **为什么清当前题用 `Shift+Delete`**：和删一处的 `Delete` 是同一个键，多按 Shift 表示「范围更大」；
+  mac 键盘上的删除键发的是 `Backspace`，所以两种都认。不和工具栏快捷键冲突（那些都带 `Cmd`/`Ctrl`/`Alt`）。
+- **一处标记只属于一道题**：跨题的标记会让「清当前题」误删或删不掉，所以页面上认得出 `app-ti` 时，起点必须落在某道题里、终点在同一道题里，跨题和全选这类两端在题外的选区都拒绝；认不出（站点改版）时不做这道检查。
+- **鼠标离开内容区就忘掉指针**：工具栏是另一个 WebView，鼠标移过去或窗口失焦时内容区还留着键盘焦点。收到 `relatedTarget` 为空的
+  `mouseout`（鼠标离开这个 WebView）或 `blur` 时清掉指针坐标和悬停状态，之后悬停换色、删一处、清当前题都不生效，直到鼠标再移回来。
+- **不拦的情况**：焦点在文本框、文字类输入框、可编辑区域里（单选框、复选框不算，选完答案焦点停在选项上照样能标）；
+  带 `Cmd`/`Ctrl`/`Alt`；输入法组字中；按住不放的自动重复。只有真的标记、换色、删除时才 `preventDefault`，从不 `stopPropagation`。
+- **只活在当前页面**：不读写任何存储。每次按键、鼠标移动、页面滚动和浏览器前进后退（`popstate`）时先检查一遍：
+  路径变了就清空全部；节点被站点摘掉或换掉的那几处单独清掉。站点用 `pushState` 换页不发事件，所以换页后的第一次鼠标移动或滚动就会清掉，
+  不用等按热键。认失效时拿标记那一刻记下的四个边界比对，而不是只看范围塌没塌：Chromium 摘节点时把落在里面的边界挪到父节点，
+  跨段标记的一端被换掉后范围不塌、两端也都还在文档里。
+- **不读题目数据**：只看选区是否为空和它的边界，不调 `toString()`。测试替身的 `Range` / `Selection` 被读文字时直接抛错。
+- 浏览器没有 `CSS.highlights` 时脚本开头就返回，不加监听、不加样式。
+
 ### UI 裁剪
 
 `init.js` 顶部有一组选择器常量（`UI_TWEAKS` 默认 `true` 总开关）。只注入 CSS，
 不碰站点逻辑。站点改版时选择器失效的表现只是"该隐藏的没隐藏"，不影响做题。
 
-六组选择器，**按隐藏方式分类**，不能混：
+七组规则，**按手法分类**，不能混：
 
 | 常量 | 手法 | 用于 | 当前内容 |
 | --- | --- | --- | --- |
@@ -392,6 +428,7 @@ Rust 负责布局和受限命令；网站仍由 `init.js` 注入快捷键与裁�
 | `NON_INTERACTIVE_SELECTORS` | **保留可见**、只去掉点击 | 留着占位但不能再导航的入口 | `a.fenbi-icon-url`（logo） |
 | `SHRINK_HEIGHT_CSS` | 改高度 | 压掉页脚过厚的留白 | `fb-web-footer` 高度 50% |
 | `UPSELL_BLOCK_SELECTORS` | `display: none`，**单独成一条规则** | 站点正在显示开通入口的整块内容 | 解析页的视频块；申论会员内容块 |
+| `SPLIT_SOLUTION_CSS` | 改布局：`@media (min-width: 1400px)` 里的 grid，**带 `:has()` 守卫、单独成条** | 解析页左右分栏 | 题目选项 + 答案统计条在左，解析视频 / 解析 / 考点 / 来源 / 笔记在右 |
 
 把 `COLLAPSE_SELECTORS` 和 `HIDE_CONTENT_SELECTORS` 用反，就是踩过的坑：
 前者必须让出宽度，后者一旦归零留白就没了。
@@ -419,7 +456,22 @@ Rust 负责布局和受限命令；网站仍由 `init.js` 注入快捷键与裁�
 
 > ⚠️ 这条规则必须**单独成条**，不能并进 `HIDE_SELECTORS`。不认 `:has()` 的旧 WebView
 > （macOS 12.3 之前的系统 WebView）会把含它的整条规则作废，并进去就连累全部裁剪。
-> 旧系统上的表现只是这两块照旧显示。`tests/js/page-tweaks.test.mjs` 盯着这一点。
+> 旧系统上的表现只是这两块照旧显示。`tests/js/page-tweaks.test.mjs` 盯着这一点：
+> 带 `:has()` 的规则里，每个选择器都必须带 `:has()`。
+
+**解析页左右分栏**（GitHub #10）：窗口宽度够 1400 像素时，每道题的 `.solution-choice-container`
+改成两栏等宽的 grid：左栏 `app-question-choice`（题目选项）接 `app-solution-overall`（答案统计条），
+右栏 `app-result-common` 从题目顶端排到统计条下面，里面「解析视频 → 解析 → 考点 → 来源 → 笔记」保持站点原来的顺序。
+窄于 1400 保持上下排。
+
+- **三块都在才分栏**：容器选择器是 `.solution-choice-container:has(> app-question-choice):has(> app-solution-overall):has(> app-result-common)`，
+  任何一块改名或挪走（站点改版），规则就不命中，页面退回原来的上下排。不用 Angular 作用域哈希。
+- **两栏都是 `minmax(0, 1fr)`**：站点给所有图片设了 `max-width: 100%`，解析视频也会跟着栏宽缩放
+  （1400 宽时 540×315 缩成 496×289），所以两栏都能缩，不会把卡片撑出去。
+- 右栏的 `margin-top`（原本是和统计条之间的 20px）去掉，和题目顶端对齐。只改布局，不碰站点节点。
+- **和开通入口那条规则一起生效不打架**：没开会员时视频块被藏掉，右栏从「解析」开始。
+- 答对的题默认被站点折叠成一条「解析」（右上角箭头展开），这时右栏就是这一条，展开后照常排。
+- 不认 `:has()` 的旧 WebView 上只是不分栏。
 
 **刻意保留可见但不可点**：`a.fenbi-icon-url`（logo）。整块拿掉会让顶栏左端空一截，
 而它原本跳 fenbi.com 首页，属于"离开刷题"的入口。做法是
@@ -471,6 +523,7 @@ CSS 选择器只能对着**真实页面**定，`pnpm check` 证明不了它们�
 └── src-tauri/
     ├── init.js             # 网站注入脚本：登录提示 + UI 裁剪 + 快捷键
     ├── init-debug.js       # 仅 debug 构建注入的诊断片段
+    ├── highlight.js        # 网站注入脚本：做题页的划词标记
     ├── permissions/
     │   └── wrapper-commands.toml   # app 命令的 ACL 声明
     ├── src/lib.rs          # 窗口、观察调度线程、命令注册
@@ -635,6 +688,24 @@ Windows / Linux 上的等价行为**未验证**。
   `tests/js/page-tweaks.test.mjs` 的「别误伤」用例按字面盯着这条
 - 该页共 23 个链接，除上表之外没有别的同类推广位
 
+**做题页（2026-11-28 用 ego-browser 实测，macOS、Chromium 内核、已登录；从目录页「练习历史 → 继续做题」进入一份没做完的练习，没有答题、没有交卷）**：
+
+| 元素 / 事实 | 实测 | 说明 |
+| --- | --- | --- |
+| 地址 | 练习 `spa.fenbi.com/ti/exam/exercise/<id>`，背题 `spa.fenbi.com/ti/memorize/<id>` | 「继续做题」直接在当前页打开。`/tiku` 下的旧做题页没有找到入口，未核实 |
+| `app-ti` | 一份 15 题的练习里 15 个，每道题一个，整页长列表 | 题目卡片，里面是 `.ti-container > .title`（题号、题型、右侧三个工具）和 `.ti-content > app-question-choice` |
+| 选项 | `input.option-radio`，每个选项一个单选框 | 选完答案焦点可能停在它上面 |
+| 题目右上的笔形按钮 | 点开后盖上一层 `canvas.pen`（1180×314）和一列「撤销 / 恢复 / 橡皮 / 清空 / 退出」 | 站点自己的手写画笔；开着时文字选不中 |
+| `style#highlight-mengshou-style` | `.highlight-mengshou-wrap { background: #ff9 }` | 站点脚本里自带的划线库，靠包 `<span>` 工作；`CSS.highlights` 是空的，站点没用 Custom Highlight API |
+| `CSS.highlights` | 存在 | Chromium 内核下实测；系统 WebView 是否支持看系统版本（Safari 17.2 起） |
+
+- **站点在做题页没有处理 `H` / `Delete` / `Backspace`**：document 上唯一的 `keydown` 监听是一个按 1 秒节流记录「最近活动时间」的
+  RxJS 订阅；其余按键处理只有弹层的 `Esc` / `←` / `→` 和视频播放器自己元素上的快捷键（读当日 13 个脚本文件）。
+  实测不注入划词脚本时按这几个键（含 `Shift+`），`defaultPrevented` 全为假，选区不变，页面没有变化
+- 把 `highlight.js`（第一版）临时注入这个真实页面：选字按 H 出底色、选区取消；悬停按 H 三色循环、悬停那处带下划线；
+  悬停按 Backspace 删一处；鼠标在第 1 题上按 Shift+Delete 只清第 1 题，第 2 题的标记还在。
+  注入到目录页时选字按 H 不登记、不拦键、不加样式
+
 **解析页的视频块（2026-11-27 用内置浏览器实测，已登录、当前考试未开会员，`spa.fenbi.com/ti/exam/solution/<id>`）**：
 
 | 元素 | 实测 | 说明 |
@@ -648,6 +719,21 @@ Windows / Linux 上的等价行为**未验证**。
   所以会员账号下选择器不命中。**这一条来自脚本模板，没有用会员账号实测**
 - `.member-btn` 点了是站点自己开的会员弹窗，不是导航
 - 这一页的 WebView 支持 `:has()`（`CSS.supports("selector(li:has(a))")` 为真）
+
+**解析页的版面（2026-11-28 用 ego-browser 实测，macOS、Chromium 内核、已登录、当前考试未开会员；从目录页「练习历史」里一份已完成的练习进入）**：
+
+| 元素 / 事实 | 实测 | 说明 |
+| --- | --- | --- |
+| `app-ti > .ti-container > .ti-content > app-solution-choice > .solution-choice-container` | 15 道题都是这一层 | 子元素依次是 `app-question-choice`、`app-solution-overall`、`app-result-common`，没有别的 |
+| 内容宽度（`.solution-choice-container`） | 视口 1280 / 1400 / 1600 / 1920 时 1140 / 1100 / 1300 / 1620 | 页面两侧留白：1280 时各 50 左右，1400 起各 130 左右 |
+| `app-result-common > .result-common-container` | `padding: 20px`、`1px` 边框、`margin-top: 20px`；右上有折叠按钮 `.toggle-btn` | 答对的题默认折叠成 60 高的一条「解析」，答错和没答的展开 |
+| `.solution-video-container.medium` | flex：视频 540×315 + 会员遮罩 270×315 | 栏宽不够时视频跟着缩（1400 宽分栏后 496×289） |
+| 全局样式 `img { max-width: 100%; height: auto; }` | 站点自带 | 解析和题干里的图片跟着栏宽缩 |
+
+- 临时注入 `init.js` 生成的整份裁剪 CSS，在 1280 / 1399 / 1400 / 1600 / 1920 五个宽度量 15 道题：
+  1400 起 15 道全部分栏，左右两栏不重叠，容器和页面都没有横向溢出；1399 及以下全部保持上下排。
+  模拟会员（不藏视频块、只藏会员遮罩）时右栏视频完整显示，不被裁。
+  复制一份容器、去掉统计条后，这份不分栏（退回上下排）
 
 **/tiku 下旧解析组件的会员相关结构（2026-11-27 读站点当日的脚本模板得到；真实页面未核对）**：
 
@@ -690,9 +776,9 @@ pnpm check    # 提交前必跑
 | 测试 | 位置 | 覆盖什么 |
 | --- | --- | --- |
 | Rust 单元测试 | `src-tauri/src/login_state.rs`、`lib.rs`、`toolbar.rs` | 凭证三态、`Started`/`Finished` 观察窗口、过期读取丢弃、入口 URL、新窗口策略、工具栏来源检查与分区尺寸（纯函数，不需要窗口） |
-| JS 行为测试 | `tests/js/` | 弹窗次数、序号去重与轮次、重试取消与预算、目录防循环、工具栏 IPC 动作、收起状态与异步乱序、五组快捷键、网站不注入工具栏 DOM |
+| JS 行为测试 | `tests/js/` | 弹窗次数、序号去重与轮次、重试取消与预算、目录防循环、工具栏 IPC 动作、收起状态与异步乱序、五组快捷键、网站不注入工具栏 DOM、划词标记的登记表与拦键 |
 
-JS 用例按登录提示、工具栏、导航快捷键与页面裁剪拆在 `tests/js/`，测试地图与单独运行方式见 [tests/README.md](tests/README.md)。
+JS 用例按登录提示、工具栏、导航快捷键、页面裁剪与划词标记拆在 `tests/js/`，测试地图与单独运行方式见 [tests/README.md](tests/README.md)。
 共用的 `tests/support/browser-env.mjs` 用最小 DOM + 可控时钟替身执行真实的 `init.js`、`toolbar.js` 和快捷键脚本；
 启动辅助在 `tests/support/boot.mjs`，模拟页面放在 `tests/fixtures/`。
 替身按需控制时钟和导航历史；它不执行浏览器布局，也不访问粉笔站点。
@@ -731,7 +817,7 @@ app 退出（或在终端按 Ctrl+C）后命令随之结束，编译失败则不
 
 ### 改 `init.js` 不用重编译
 
-debug 构建启动时**从磁盘读** `init.js` / `init-debug.js` / `shortcuts.js`（由 `build.rs` 拷到
+debug 构建启动时**从磁盘读** `init.js` / `init-debug.js` / `highlight.js` / `shortcuts.js`（由 `build.rs` 拷到
 `target/debug/`），所以调脚本只要重开 app：
 
 ```bash
