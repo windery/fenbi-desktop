@@ -92,6 +92,8 @@ class Clock {
 
 class Element {
   constructor(tag, className = "", attrs = {}) {
+    this.nodeType = 1;
+    this.parentNode = null;
     this.tagName = tag.toUpperCase();
     this.className = className;
     this.id = attrs.id ?? "";
@@ -157,6 +159,7 @@ class Element {
 
   appendChild(child) {
     this.children.push(child);
+    child.parentNode = this;
     return child;
   }
 
@@ -164,13 +167,38 @@ class Element {
     const at = reference ? this.children.indexOf(reference) : -1;
     if (at < 0) this.children.push(child);
     else this.children.splice(at, 0, child);
+    child.parentNode = this;
     return child;
   }
 
   removeChild(child) {
     const at = this.children.indexOf(child);
     if (at >= 0) this.children.splice(at, 1);
+    child.parentNode = null;
     return child;
+  }
+
+  get parentElement() {
+    return this.parentNode;
+  }
+
+  /* 挂在 <html> 下面才算在文档里；站点把节点摘掉后就是 false。 */
+  get isConnected() {
+    let node = this;
+    while (node.parentNode) node = node.parentNode;
+    return node.tagName === "HTML";
+  }
+
+  contains(node) {
+    for (let at = node; at; at = at.parentNode) if (at === this) return true;
+    return false;
+  }
+
+  closest(selector) {
+    for (let at = this; at && at.nodeType === 1; at = at.parentNode) {
+      if (matches(at, selector)) return at;
+    }
+    return null;
   }
 
   addEventListener(type, fn) {
@@ -185,6 +213,91 @@ class Element {
     this.clicks++;
     if (this.onClick) this.onClick(this);
     this.dispatch("click");
+  }
+}
+
+/** 文字节点：划词标记的范围挂在它上面。只有父节点和是否在文档里两件事。 */
+class TextNode {
+  constructor(parent) {
+    this.nodeType = 3;
+    this.parentNode = null;
+    if (parent) parent.appendChild(this);
+  }
+
+  get parentElement() {
+    return this.parentNode;
+  }
+
+  get isConnected() {
+    return !!this.parentNode && this.parentNode.isConnected;
+  }
+}
+
+/* Range 的最小替身：边界 + 测试摆好的屏幕位置。不存文字——划词脚本也不该读文字。 */
+class FakeRange {
+  constructor(startContainer, startOffset, endContainer, endOffset, rects = []) {
+    Object.assign(this, { startContainer, startOffset, endContainer, endOffset });
+    this.rects = rects;
+  }
+
+  get collapsed() {
+    return this.startContainer === this.endContainer && this.startOffset === this.endOffset;
+  }
+
+  cloneRange() {
+    return new FakeRange(this.startContainer, this.startOffset, this.endContainer, this.endOffset, this.rects);
+  }
+
+  getClientRects() {
+    return this.rects;
+  }
+
+  /** 站点把节点摘掉时，真的 Range 会塌成一个点。 */
+  collapse() {
+    this.endContainer = this.startContainer;
+    this.endOffset = this.startOffset;
+  }
+
+  toString() {
+    throw new Error("划词脚本不许读选中的文字（Range.toString）");
+  }
+}
+
+class FakeSelection {
+  constructor() {
+    this.ranges = [];
+  }
+
+  get rangeCount() {
+    return this.ranges.length;
+  }
+
+  get isCollapsed() {
+    return !this.ranges.length || this.ranges[0].collapsed;
+  }
+
+  getRangeAt(index) {
+    return this.ranges[index];
+  }
+
+  addRange(range) {
+    this.ranges.push(range);
+  }
+
+  removeAllRanges() {
+    this.ranges.length = 0;
+  }
+
+  toString() {
+    throw new Error("划词脚本不许读选中的文字（Selection.toString）");
+  }
+}
+
+/* CSS Custom Highlight API 的替身：Highlight 是一组 Range，CSS.highlights 是名字到它的登记表。 */
+class FakeHighlight extends Set {
+  constructor(...ranges) {
+    super(ranges);
+    this.priority = 0;
   }
 }
 
@@ -294,9 +407,25 @@ export function createEnv(options = {}) {
     },
   };
 
+  const network = [];
+  const cookieWrites = [];
+  const sessionStore = new Map();
+  let pointTarget = null;
+  const selection = new FakeSelection();
+
   const document = {
     readyState: options.domReady === false ? "loading" : "complete",
     listeners: {},
+    activeElement: null,
+    get cookie() {
+      return "";
+    },
+    set cookie(value) {
+      cookieWrites.push(value);
+    },
+    elementFromPoint() {
+      return pointTarget;
+    },
     createElement(tag) {
       return new Element(tag);
     },
@@ -324,6 +453,7 @@ export function createEnv(options = {}) {
   document.documentElement = documentElement;
   document.head = head;
   document.body = body;
+  document.activeElement = body;
 
   /** 深度优先遍历整棵假 DOM（含 shadow root）。 */
   function descendants(root = documentElement) {
@@ -341,6 +471,7 @@ export function createEnv(options = {}) {
 
   const window = {
     listeners: {},
+    getSelection: () => selection,
     addEventListener(type, fn) {
       (window.listeners[type] ??= []).push(fn);
     },
@@ -429,13 +560,38 @@ export function createEnv(options = {}) {
   /* 平台只影响按钮上的键位提示文案（⌘[ vs Alt+←）。 */
   const navigator = { platform: options.platform ?? "MacIntel", userAgent: "harness" };
 
+  const sessionStorage = {
+    getItem: (key) => (sessionStore.has(key) ? sessionStore.get(key) : null),
+    setItem: (key, value) => sessionStore.set(key, String(value)),
+    removeItem: (key) => sessionStore.delete(key),
+  };
+
+  /* 浏览器支不支持 CSS Custom Highlight API；highlights: false 模拟老 WebView。 */
+  const highlightRegistry = new Map();
+  const CSS = options.highlights === false ? {} : { highlights: highlightRegistry };
+
+  class FakeXhr {
+    open(method, url) {
+      network.push(`xhr ${method} ${url}`);
+    }
+    send() {}
+  }
+
   const sandbox = {
     window,
     document,
     location,
     history,
     localStorage,
-    navigator,
+    sessionStorage,
+    navigator: { ...navigator, sendBeacon: (url) => network.push(`beacon ${url}`) },
+    CSS,
+    Highlight: options.highlights === false ? undefined : FakeHighlight,
+    fetch: (url) => {
+      network.push(`fetch ${url}`);
+      return Promise.resolve({ ok: true });
+    },
+    XMLHttpRequest: FakeXhr,
     Image: FakeImage,
     console: { log: (...args) => logs.push(args.join(" ")), error: (...args) => logs.push(args.join(" ")) },
     Date: { now: () => clock.now },
@@ -449,7 +605,9 @@ export function createEnv(options = {}) {
   // 用 new Function 把 init.js 的源码直接跑起来：测的是真实实现，不是副本。
   const source = options.toolbar
     ? readFileSync(path.join(REPO_ROOT, "src-tauri/toolbar/shortcuts.js"), "utf8") + "\n" + readFileSync(path.join(REPO_ROOT, "src-tauri/toolbar/toolbar.js"), "utf8")
-    : initSource();
+    : options.highlight
+      ? readFileSync(path.join(REPO_ROOT, "src-tauri/highlight.js"), "utf8")
+      : initSource();
   new Function(...names, source)(...Object.values(sandbox));
 
   const env = {
@@ -595,6 +753,47 @@ export function createEnv(options = {}) {
     /** 从按钮的无障碍名称读取快捷键；可见提示在悬停/聚焦时显示在栏内。 */
     hintText(button) {
       return button?.getAttribute("aria-label")?.match(/\(([^)]+)\)$/)?.[1] ?? null;
+    },
+
+    /* ── 划词标记（highlight.js）用的替身 ── */
+
+    network,
+    cookieWrites,
+    sessionStorage: sessionStore,
+    selection,
+    highlights: highlightRegistry,
+
+    /** 建一个元素挂到 parent（默认 body）下面。 */
+    element(tag, className = "", parent = body) {
+      return parent.appendChild(new Element(tag, className));
+    },
+
+    /** 在 parent 下面建一个文字节点。 */
+    textNode(parent) {
+      return new TextNode(parent);
+    },
+
+    /** 用户选中了 node 上 [start, end) 这一段，屏幕上占 rects 这些矩形。 */
+    select(node, start, end, rects = []) {
+      selection.removeAllRanges();
+      selection.addRange(new FakeRange(node, start, node, end, rects));
+      return selection.getRangeAt(0);
+    },
+
+    /** 鼠标移到 (x, y)，下面是 target 元素。 */
+    hover(x, y, target = null) {
+      pointTarget = target;
+      window.dispatch("mousemove", { clientX: x, clientY: y });
+    },
+
+    /** 让 element 拿到焦点。 */
+    focus(element) {
+      document.activeElement = element;
+    },
+
+    /** 某个名字的 Highlight 里登记了几处范围；没登记过就是 0。 */
+    markCount(name) {
+      return highlightRegistry.get(name)?.size ?? 0;
     },
 
     /** 仅 debug 构建暴露的内部观察口（见 init.js 末尾）。 */

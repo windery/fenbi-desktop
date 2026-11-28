@@ -120,6 +120,7 @@ wrapper **只负责**：
 1. 启动时把窗口落到题库目录页
 2. 裁剪与刷题无关的页面元素（只注入 CSS）
 3. 在用户即将需要时**点击站点自己的登录入口按钮**，把站点的登录框带出来
+4. 在做题页提供划词标记：只叠底色，不改站点结构、不读题目数据、不落盘（见下文「做题页的划词标记」与 `docs/adr/0004`）
 
 wrapper **不碰站点的业务逻辑**：
 
@@ -377,6 +378,34 @@ Rust 负责布局和受限命令；网站仍由 `init.js` 注入快捷键与裁�
 `keydown` 处理会 preventDefault（全部 3.55MB JS 完整检查过）。
 注意不能用 `location.reload(true)` 做硬刷新——那个参数已废弃、会被静默忽略。
 
+### 做题页的划词标记
+
+`src-tauri/highlight.js` 是独立的注入脚本，`lib.rs` 把它和 `init.js` 一起拼进 `initialization_script`，
+每个粉笔页面都带；它在每次按键时按当前路径判断是不是做题页（站点是 SPA，换页不重载），不是就什么都不做、不拦键。
+做题页的路径写死成真实页面上核实过的两种：`/ti/exam/exercise/` 和 `/ti/memorize/`（见「已验证的站点事实」）。
+
+| 按键 | 条件 | 效果 |
+| --- | --- | --- |
+| `H` | 有选区 | 标成第 1 种颜色，然后取消选区；选区正好是已标的一处时换下一种颜色 |
+| `H` | 没有选区、鼠标停在一处标记上 | 这一处换下一种颜色（3 色循环） |
+| `Delete` / `Backspace` | 鼠标停在一处标记上 | 删掉这一处 |
+| `Shift+Delete` / `Shift+Backspace` | 鼠标在一道题（`app-ti`）上 | 清掉这道题的全部标记；页面上一个 `app-ti` 都没有（站点改版）时清掉本页全部标记 |
+
+- **画法**：只用 CSS Custom Highlight API。3 个 `Highlight` 各管一种颜色（`fenbi-mark-1..3`），
+  悬停的那一处另外登记进优先级更高的 `fenbi-mark-hover`，只加一条下划线。第一次标记时往页面加一条
+  `<style data-fenbi-wrapper="highlight">`，里面只有这 4 条 `::highlight()` 规则；不插别的元素、不改站点节点。
+- **颜色**：`#ffd8a8`（浅橙）、`#c3f0c8`（浅绿）、`#ffc9de`（浅粉），文字固定成 `#1f2328`。
+  避开站点的蓝色选中态和站点自带划线库的 `#ff9` 黄；字色固定是为了站点切深色主题时照样读得清。
+- **为什么标完要取消选区**：浏览器把选中态画在自定义高亮上面，选区不取消就看不见标成了什么颜色。
+  所以「再按 H 换色」改成鼠标停在那一处上按 H；重新选中同一段再按 H 也能换色。
+- **为什么清当前题用 `Shift+Delete`**：和删一处的 `Delete` 是同一个键，多按 Shift 表示「范围更大」；
+  mac 键盘上的删除键发的是 `Backspace`，所以两种都认。不和工具栏快捷键冲突（那些都带 `Cmd`/`Ctrl`/`Alt`）。
+- **不拦的情况**：焦点在文本框、文字类输入框、可编辑区域里（单选框、复选框不算，选完答案焦点停在选项上照样能标）；
+  带 `Cmd`/`Ctrl`/`Alt`；输入法组字中；按住不放的自动重复。只有真的标记、换色、删除时才 `preventDefault`，从不 `stopPropagation`。
+- **只活在当前页面**：不读写任何存储。下一次按键或鼠标移动时，路径变了就清空全部，范围塌了或节点被站点摘掉的那几处单独清掉。
+- **不读题目数据**：只看选区是否为空和它的边界，不调 `toString()`。测试替身的 `Range` / `Selection` 被读文字时直接抛错。
+- 浏览器没有 `CSS.highlights` 时脚本开头就返回，不加监听、不加样式。
+
 ### UI 裁剪
 
 `init.js` 顶部有一组选择器常量（`UI_TWEAKS` 默认 `true` 总开关）。只注入 CSS，
@@ -471,6 +500,7 @@ CSS 选择器只能对着**真实页面**定，`pnpm check` 证明不了它们�
 └── src-tauri/
     ├── init.js             # 网站注入脚本：登录提示 + UI 裁剪 + 快捷键
     ├── init-debug.js       # 仅 debug 构建注入的诊断片段
+    ├── highlight.js        # 网站注入脚本：做题页的划词标记
     ├── permissions/
     │   └── wrapper-commands.toml   # app 命令的 ACL 声明
     ├── src/lib.rs          # 窗口、观察调度线程、命令注册
@@ -633,6 +663,24 @@ Windows / Linux 上的等价行为**未验证**。
   `tests/js/page-tweaks.test.mjs` 的「别误伤」用例按字面盯着这条
 - 该页共 23 个链接，除上表之外没有别的同类推广位
 
+**做题页（2026-11-28 用 ego-browser 实测，macOS、Chromium 内核、已登录；从目录页「练习历史 → 继续做题」进入一份没做完的练习，没有答题、没有交卷）**：
+
+| 元素 / 事实 | 实测 | 说明 |
+| --- | --- | --- |
+| 地址 | 练习 `spa.fenbi.com/ti/exam/exercise/<id>`，背题 `spa.fenbi.com/ti/memorize/<id>` | 「继续做题」直接在当前页打开。`/tiku` 下的旧做题页没有找到入口，未核实 |
+| `app-ti` | 一份 15 题的练习里 15 个，每道题一个，整页长列表 | 题目卡片，里面是 `.ti-container > .title`（题号、题型、右侧三个工具）和 `.ti-content > app-question-choice` |
+| 选项 | `input.option-radio`，每个选项一个单选框 | 选完答案焦点可能停在它上面 |
+| 题目右上的笔形按钮 | 点开后盖上一层 `canvas.pen`（1180×314）和一列「撤销 / 恢复 / 橡皮 / 清空 / 退出」 | 站点自己的手写画笔；开着时文字选不中 |
+| `style#highlight-mengshou-style` | `.highlight-mengshou-wrap { background: #ff9 }` | 站点脚本里自带的划线库，靠包 `<span>` 工作；`CSS.highlights` 是空的，站点没用 Custom Highlight API |
+| `CSS.highlights` | 存在 | Chromium 内核下实测；系统 WebView 是否支持看系统版本（Safari 17.2 起） |
+
+- **站点在做题页没有处理 `H` / `Delete` / `Backspace`**：document 上唯一的 `keydown` 监听是一个按 1 秒节流记录「最近活动时间」的
+  RxJS 订阅；其余按键处理只有弹层的 `Esc` / `←` / `→` 和视频播放器自己元素上的快捷键（读当日 13 个脚本文件）。
+  实测不注入划词脚本时按这几个键（含 `Shift+`），`defaultPrevented` 全为假，选区不变，页面没有变化
+- 把 `highlight.js` 临时注入这个真实页面：选字按 H 出底色、选区取消；悬停按 H 三色循环、悬停那处带下划线；
+  悬停按 Backspace 删一处；鼠标在第 1 题上按 Shift+Delete 只清第 1 题，第 2 题的标记还在。
+  注入到目录页时选字按 H 不登记、不拦键、不加样式
+
 **解析页的视频块（2026-11-27 用内置浏览器实测，已登录、当前考试未开会员，`spa.fenbi.com/ti/exam/solution/<id>`）**：
 
 | 元素 | 实测 | 说明 |
@@ -688,9 +736,9 @@ pnpm check    # 提交前必跑
 | 测试 | 位置 | 覆盖什么 |
 | --- | --- | --- |
 | Rust 单元测试 | `src-tauri/src/login_state.rs`、`lib.rs`、`toolbar.rs` | 凭证三态、`Started`/`Finished` 观察窗口、过期读取丢弃、入口 URL、新窗口策略、工具栏来源检查与分区尺寸（纯函数，不需要窗口） |
-| JS 行为测试 | `tests/js/` | 弹窗次数、序号去重与轮次、重试取消与预算、目录防循环、工具栏 IPC 动作、收起状态与异步乱序、五组快捷键、网站不注入工具栏 DOM |
+| JS 行为测试 | `tests/js/` | 弹窗次数、序号去重与轮次、重试取消与预算、目录防循环、工具栏 IPC 动作、收起状态与异步乱序、五组快捷键、网站不注入工具栏 DOM、划词标记的登记表与拦键 |
 
-JS 用例按登录提示、工具栏、导航快捷键与页面裁剪拆在 `tests/js/`，测试地图与单独运行方式见 [tests/README.md](tests/README.md)。
+JS 用例按登录提示、工具栏、导航快捷键、页面裁剪与划词标记拆在 `tests/js/`，测试地图与单独运行方式见 [tests/README.md](tests/README.md)。
 共用的 `tests/support/browser-env.mjs` 用最小 DOM + 可控时钟替身执行真实的 `init.js`、`toolbar.js` 和快捷键脚本；
 启动辅助在 `tests/support/boot.mjs`，模拟页面放在 `tests/fixtures/`。
 替身按需控制时钟和导航历史；它不执行浏览器布局，也不访问粉笔站点。
@@ -729,7 +777,7 @@ app 退出（或在终端按 Ctrl+C）后命令随之结束，编译失败则不
 
 ### 改 `init.js` 不用重编译
 
-debug 构建启动时**从磁盘读** `init.js` / `init-debug.js` / `shortcuts.js`（由 `build.rs` 拷到
+debug 构建启动时**从磁盘读** `init.js` / `init-debug.js` / `highlight.js` / `shortcuts.js`（由 `build.rs` 拷到
 `target/debug/`），所以调脚本只要重开 app：
 
 ```bash

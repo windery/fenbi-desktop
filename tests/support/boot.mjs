@@ -44,3 +44,10 @@ export function press(env, partial) {
   env.window.dispatch("keydown", event);
   return event;
 }
+
+/** 跑划词标记脚本（highlight.js）的环境；默认在做题页。 */
+export async function bootHighlight(overrides = {}) {
+  return boot({ url: PRACTICE_URL_FOR_HIGHLIGHT, html: "", highlight: true, ...overrides });
+}
+
+const PRACTICE_URL_FOR_HIGHLIGHT = "https://spa.fenbi.com/ti/exam/exercise/1_3e_2k95rs8?routecs=syzc";

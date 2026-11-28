@@ -5,7 +5,8 @@
 //
 // ## 边界：只做展示层
 //
-// 它把窗口开到刷题页、按需裁剪页面元素、必要时点击**站点自己的登录入口按钮**。
+// 它把窗口开到刷题页、按需裁剪页面元素、必要时点击**站点自己的登录入口按钮**，
+// 并在做题页提供只叠底色的划词标记（`highlight.js`，见 docs/adr/0004）。
 // 它不驱动答题、不提交试卷、不选分类、不调用站点私有接口。
 //
 // ## 它确实会读 cookie —— 但只读名字
@@ -293,10 +294,12 @@ fn build_window(
     // 跳转目标用 JSON 序列化嵌进脚本，而不是手工转义引号——
     // 序列化器负责所有转义，目标里出现换行或引号也逃不出字符串字面量。
     let target_literal = serde_json::to_string(parsed_target.as_str())?;
+    // highlight.js 是做题页的划词标记（docs/adr/0004），独立成文件、自己判断做题页。
     let script = format!(
-        "{}\n{}\n{}",
+        "{}\n{}\n{}\n{}",
         load_script("shortcuts.js", include_str!("../toolbar/shortcuts.js")),
         load_script("init.js", include_str!("../init.js")),
+        load_script("highlight.js", include_str!("../highlight.js")),
         debug_hook
     )
     .replace("__TARGET_URL__", &target_literal)
