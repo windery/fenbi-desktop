@@ -116,16 +116,16 @@ fn version_from_location(location: &str) -> Option<Version> {
 ///
 /// - 环境变量（`HTTPS_PROXY` 等）里的代理只配环境变量 `NO_PROXY` 里的排除项。
 /// - 系统设置里的代理：Windows 读注册表，macOS 读 `scutil --proxy`，都只用 HTTPS 那一项；
-///   系统设置里的排除项和环境变量 `NO_PROXY` 里的都照样直连。从访达或程序坞打开的
+///   系统设置里的排除项（按系统的通配写法匹配）和环境变量 `NO_PROXY` 里的都照样直连。从访达或程序坞打开的
 ///   Mac 应用拿不到终端里设的环境变量，所以 Mac 上实际靠的是系统设置这一步。
 /// - Linux 只认环境变量。
 /// - 读不出来或格式不认识，当作没有代理，检查照常直连。PAC 自动配置和 SOCKS 代理不管。
-fn update_proxy() -> Option<ureq::Proxy> {
+fn update_proxy(url: &str) -> Option<ureq::Proxy> {
     pick_proxy(ureq::Proxy::try_from_env(), || {
         let no_proxy = std::env::var("NO_PROXY")
             .or_else(|_| std::env::var("no_proxy"))
             .ok();
-        build_system_proxy(system_proxy()?, no_proxy.as_deref())
+        build_system_proxy(system_proxy()?, url, no_proxy.as_deref())
     })
 }
 
@@ -146,9 +146,28 @@ struct SystemProxy {
     exceptions: Vec<String>,
 }
 
-/// 用系统设置里的代理建 ureq 的代理。只认 http / https 代理，要有主机和非零端口，
-/// 否则当作没有代理。`no_proxy` 是环境变量 `NO_PROXY` 的值，和系统设置里的排除项一起生效。
-fn build_system_proxy(found: SystemProxy, no_proxy: Option<&str>) -> Option<ureq::Proxy> {
+/// 用系统设置里的代理给去 `url` 的请求建 ureq 的代理；返回空就直连。
+///
+/// - `url` 的主机命中系统设置里的排除项（按 `bypass_matches` 的通配写法）就直连。
+/// - 只认 http / https 代理，要有主机和非零端口，否则当作没有代理。地址里带的账号密码保留。
+/// - `no_proxy` 是环境变量 `NO_PROXY` 的值，交给 ureq 按它自己的写法匹配。
+fn build_system_proxy(
+    found: SystemProxy,
+    url: &str,
+    no_proxy: Option<&str>,
+) -> Option<ureq::Proxy> {
+    let host = url
+        .parse::<ureq::http::Uri>()
+        .ok()?
+        .host()?
+        .to_ascii_lowercase();
+    if found
+        .exceptions
+        .iter()
+        .any(|pattern| bypass_matches(pattern, &host))
+    {
+        return None;
+    }
     let address = if found.address.contains("://") {
         found.address
     } else {
@@ -167,14 +186,50 @@ fn build_system_proxy(found: SystemProxy, no_proxy: Option<&str>) -> Option<ureq
     let mut proxy = ureq::Proxy::builder(protocol)
         .host(parsed.host())
         .port(port);
-    let from_env = no_proxy.unwrap_or_default().split(',');
-    for exception in found.exceptions.iter().map(String::as_str).chain(from_env) {
+    if let Some(username) = parsed.username() {
+        proxy = proxy.username(username);
+    }
+    if let Some(password) = parsed.password() {
+        proxy = proxy.password(password);
+    }
+    for exception in no_proxy.unwrap_or_default().split(',') {
         let exception = exception.trim();
         if !exception.is_empty() {
             proxy = proxy.no_proxy(exception);
         }
     }
     proxy.build().ok()
+}
+
+/// 系统设置里的一条排除项是否命中主机。两个系统都用同一种写法：`*` 代表任意一段字符
+/// （可以在开头、中间、结尾，例如 `*.local`、`127.*`、`*github*`），不分大小写，整个主机名
+/// 都要对上。前面写了 `http://` / `https://` 的照样认。`192.168.0.0/16` 这类网段写法
+/// 对不上主机名，等于不生效（GitHub 是域名，用不上它）。
+fn bypass_matches(pattern: &str, host: &str) -> bool {
+    let pattern = pattern.trim().to_ascii_lowercase();
+    let pattern = pattern
+        .strip_prefix("https://")
+        .or_else(|| pattern.strip_prefix("http://"))
+        .unwrap_or(&pattern);
+    if pattern.is_empty() {
+        return false;
+    }
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = host.strip_prefix(first) else {
+        return false;
+    };
+    let others: Vec<&str> = parts.collect();
+    let Some((last, middle)) = others.split_last() else {
+        return rest.is_empty();
+    };
+    for piece in middle {
+        match rest.find(piece) {
+            Some(at) => rest = &rest[at + piece.len()..],
+            None => return false,
+        }
+    }
+    rest.ends_with(last)
 }
 
 #[cfg(target_os = "macos")]
@@ -259,7 +314,8 @@ fn proxy_from_scutil(output: &str) -> Option<SystemProxy> {
 ///
 /// `ProxyServer` 有两种写法：所有协议共用一个（`主机:端口`），或按协议分开
 /// （`http=主机:端口;https=主机:端口;socks=…`），后者只用 `https=` 那一项，没有就直连。
-/// 每一项都可以带上连代理用的协议（`https://主机:端口`）。`ProxyOverride` 用分号分隔，
+/// 每一项都可以带上连代理用的协议（`https://主机:端口`）；省略端口时用这个协议的默认端口
+/// （http 80、https 443），和系统一样。`ProxyOverride` 用分号分隔，
 /// `<local>` 指不带点的内网主机名，GitHub 用不上，跳过。系统代理关着时排除项也不用。
 #[cfg(any(windows, test))]
 fn proxy_from_windows(enabled: bool, server: &str, overrides: &str) -> Option<SystemProxy> {
@@ -281,6 +337,17 @@ fn proxy_from_windows(enabled: bool, server: &str, overrides: &str) -> Option<Sy
     if address.is_empty() {
         return None;
     }
+    let (scheme, host_port) = address.split_once("://").unwrap_or(("http", address));
+    let address = if host_port.contains(':') {
+        address.to_string()
+    } else {
+        let port = if scheme.eq_ignore_ascii_case("https") {
+            443
+        } else {
+            80
+        };
+        format!("{address}:{port}")
+    };
     let exceptions = overrides
         .split(';')
         .map(str::trim)
@@ -288,7 +355,7 @@ fn proxy_from_windows(enabled: bool, server: &str, overrides: &str) -> Option<Sy
         .map(str::to_string)
         .collect();
     Some(SystemProxy {
-        address: address.to_string(),
+        address,
         exceptions,
     })
 }
@@ -368,11 +435,12 @@ pub async fn check_update(
     let handle = app.clone();
     let found = tauri::async_runtime::spawn_blocking(move || {
         let current = handle.package_info().version.clone();
+        let url = check_url();
         check_now(
             &handle.state::<UpdateState>(),
             &current,
-            &check_url(),
-            update_proxy(),
+            &url,
+            update_proxy(&url),
             TIMEOUT,
         )
     })
@@ -400,7 +468,8 @@ pub fn spawn_startup_check(app: &tauri::AppHandle) {
     std::thread::spawn(move || {
         let current = app.package_info().version.clone();
         let user_agent = format!("fenbi-desktop/{current}");
-        match fetch_latest(&check_url(), &user_agent, update_proxy(), TIMEOUT) {
+        let url = check_url();
+        match fetch_latest(&url, &user_agent, update_proxy(&url), TIMEOUT) {
             Ok(latest) => {
                 let updates = app.state::<UpdateState>();
                 let found = updates.record(&current, latest);
@@ -744,6 +813,20 @@ mod tests {
                 "",
                 Some(found("127.0.0.1:8081", &[])),
             ),
+            // 省略端口：用这个协议的默认端口，和系统一样
+            ("proxy.example", "", Some(found("proxy.example:80", &[]))),
+            (
+                "https://sproxy.example",
+                "",
+                Some(found("https://sproxy.example:443", &[])),
+            ),
+            (
+                "http=127.0.0.1:8080;https=proxy.example",
+                "",
+                Some(found("proxy.example:80", &[])),
+            ),
+            // 写了冒号却没写端口：不补，交给后面的校验挡掉
+            ("proxy.example:", "", Some(found("proxy.example:", &[]))),
             // 写明了连代理用的协议
             (
                 "https://proxy.example:8443",
@@ -780,6 +863,7 @@ mod tests {
     fn a_system_proxy_needs_an_http_or_https_proxy_with_a_real_port() {
         for address in [
             "127.0.0.1",
+            "127.0.0.1:",
             "127.0.0.1:0",
             "127.0.0.1:abc",
             ":7890",
@@ -787,37 +871,89 @@ mod tests {
             "ftp://127.0.0.1:21",
         ] {
             assert!(
-                build_system_proxy(found(address, &[]), None).is_none(),
+                build_system_proxy(found(address, &[]), RELEASES_URL, None).is_none(),
                 "{address}"
             );
         }
 
-        let proxy = build_system_proxy(found("127.0.0.1:7890", &[]), None).unwrap();
+        let proxy = build_system_proxy(found("127.0.0.1:7890", &[]), RELEASES_URL, None).unwrap();
         assert_eq!(proxy.protocol(), ureq::ProxyProtocol::Http);
         assert_eq!((proxy.host(), proxy.port()), ("127.0.0.1", 7890));
 
-        let proxy = build_system_proxy(found("https://proxy.example:8443", &[]), None).unwrap();
+        let proxy =
+            build_system_proxy(found("https://proxy.example:8443", &[]), RELEASES_URL, None)
+                .unwrap();
         assert_eq!(proxy.protocol(), ureq::ProxyProtocol::Https);
         assert_eq!((proxy.host(), proxy.port()), ("proxy.example", 8443));
     }
 
     #[test]
+    fn a_proxy_address_keeps_its_credentials() {
+        let proxy =
+            build_system_proxy(found("user:secret@127.0.0.1:7890", &[]), RELEASES_URL, None)
+                .unwrap();
+        assert_eq!(proxy.username(), Some("user"));
+        assert_eq!(proxy.password(), Some("secret"));
+    }
+
+    #[test]
+    fn system_exclusions_match_like_the_system_does() {
+        for (pattern, host, expected) in [
+            ("github.com", "github.com", true),
+            ("GitHub.COM", "github.com", true),
+            ("*github*", "github.com", true),
+            ("*git*", "github.com", true),
+            ("*.github.com", "api.github.com", true),
+            ("*.github.com", "github.com", false),
+            ("git*.com", "github.com", true),
+            ("http://*github*", "github.com", true),
+            ("*.local", "printer.local", true),
+            ("127.*", "127.0.0.1", true),
+            ("*", "github.com", true),
+            ("github.co", "github.com", false),
+            ("*hub", "github.com", false),
+            ("192.168.0.0/16", "github.com", false),
+            ("", "github.com", false),
+        ] {
+            assert_eq!(
+                bypass_matches(pattern, host),
+                expected,
+                "{pattern} / {host}"
+            );
+        }
+    }
+
+    #[test]
     fn hosts_excluded_in_system_settings_or_no_proxy_skip_the_system_proxy() {
-        let proxy = build_system_proxy(
-            found("127.0.0.1:7890", &["localhost", "*.local", "127.*"]),
-            Some(" example.org , .internal.test"),
-        )
-        .unwrap();
+        let exceptions = ["localhost", "*.local", "127.*"];
         for target in [
             "http://localhost/",
             "http://printer.local/",
             "http://127.0.0.1:8850/",
-            "https://example.org/",
-            "https://api.internal.test/",
         ] {
-            assert!(proxy.is_no_proxy(&uri(target)), "{target}");
+            assert!(
+                build_system_proxy(found("127.0.0.1:7890", &exceptions), target, None).is_none(),
+                "{target} 直连"
+            );
         }
-        assert!(!proxy.is_no_proxy(&uri(RELEASES_URL)), "GitHub 走代理");
+        for pattern in ["*github*", "github.com", "*.com"] {
+            assert!(
+                build_system_proxy(found("127.0.0.1:7890", &[pattern]), RELEASES_URL, None)
+                    .is_none(),
+                "{pattern}"
+            );
+        }
+
+        let proxy = build_system_proxy(
+            found("127.0.0.1:7890", &exceptions),
+            RELEASES_URL,
+            Some(" example.org , .internal.test"),
+        )
+        .expect("GitHub 不在排除项里，走代理");
+        assert!(!proxy.is_no_proxy(&uri(RELEASES_URL)));
+        for target in ["https://example.org/", "https://api.internal.test/"] {
+            assert!(proxy.is_no_proxy(&uri(target)), "{target} 按 NO_PROXY 直连");
+        }
     }
 
     #[test]
@@ -903,14 +1039,10 @@ mod tests {
         let (https_port, https_connects) = fake_connect_proxy(REDIRECT_TO_9_9_9);
         let settings =
             format!("http=127.0.0.1:{http_port};https=127.0.0.1:{https_port};socks=127.0.0.1:1");
+        let url = "http://releases.invalid/windery/fenbi-desktop/releases/latest";
         let proxy = proxy_from_windows(true, &settings, "<local>")
-            .and_then(|found| build_system_proxy(found, None));
-        let found = fetch_latest(
-            "http://releases.invalid/windery/fenbi-desktop/releases/latest",
-            "fenbi-desktop/test",
-            proxy,
-            Duration::from_secs(2),
-        );
+            .and_then(|found| build_system_proxy(found, url, None));
+        let found = fetch_latest(url, "fenbi-desktop/test", proxy, Duration::from_secs(2));
         assert_eq!(found, Ok(v("9.9.9")));
         assert_eq!(
             https_connects.recv_timeout(Duration::from_secs(1)).unwrap(),
@@ -934,7 +1066,7 @@ mod tests {
                 found.exceptions.clear();
                 found
             })
-            .and_then(|found| build_system_proxy(found, Some("127.0.0.1")));
+            .and_then(|found| build_system_proxy(found, &url, Some("127.0.0.1")));
         assert_eq!(
             fetch_latest(&url, "fenbi-desktop/test", proxy, Duration::from_secs(2)),
             Ok(v("9.9.9"))
@@ -946,14 +1078,49 @@ mod tests {
 
         // 没命中：照常走系统代理
         let (port, connects) = fake_connect_proxy(REDIRECT_TO_9_9_9);
-        let proxy = build_system_proxy(found(&format!("127.0.0.1:{port}"), &[]), Some("127.0.0.1"));
+        let url = "http://releases.invalid/windery/fenbi-desktop/releases/latest";
+        let proxy = build_system_proxy(
+            found(&format!("127.0.0.1:{port}"), &[]),
+            url,
+            Some("127.0.0.1"),
+        );
         assert_eq!(
-            fetch_latest(
-                "http://releases.invalid/windery/fenbi-desktop/releases/latest",
-                "fenbi-desktop/test",
-                proxy,
-                Duration::from_secs(2),
-            ),
+            fetch_latest(url, "fenbi-desktop/test", proxy, Duration::from_secs(2),),
+            Ok(v("9.9.9"))
+        );
+        assert_eq!(
+            connects.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "CONNECT releases.invalid:80 HTTP/1.1"
+        );
+    }
+
+    #[test]
+    fn a_windows_wildcard_exclusion_bypasses_the_per_protocol_proxy() {
+        // 通配命中（`*0.0*` 对上 127.0.0.1，和 `*github*` 对上 github.com 同一种写法）：
+        // 直连假发布页，代理收不到请求
+        let (port, connects) = fake_connect_proxy(REDIRECT_TO_9_9_9);
+        let url = fake_release_page(Some(REDIRECT_TO_9_9_9));
+        let settings = format!("http=127.0.0.1:1;https=127.0.0.1:{port}");
+        let proxy = proxy_from_windows(true, &settings, "*0.0*;<local>")
+            .and_then(|found| build_system_proxy(found, &url, None));
+        assert!(proxy.is_none());
+        assert_eq!(
+            fetch_latest(&url, "fenbi-desktop/test", proxy, Duration::from_secs(2)),
+            Ok(v("9.9.9"))
+        );
+        assert!(
+            connects.recv_timeout(Duration::from_millis(200)).is_err(),
+            "通配排除项命中时代理收不到请求"
+        );
+
+        // 没命中：照常走 https= 那一项的代理
+        let (port, connects) = fake_connect_proxy(REDIRECT_TO_9_9_9);
+        let url = "http://releases.invalid/windery/fenbi-desktop/releases/latest";
+        let settings = format!("http=127.0.0.1:1;https=127.0.0.1:{port}");
+        let proxy = proxy_from_windows(true, &settings, "*github*;<local>")
+            .and_then(|found| build_system_proxy(found, url, None));
+        assert_eq!(
+            fetch_latest(url, "fenbi-desktop/test", proxy, Duration::from_secs(2)),
             Ok(v("9.9.9"))
         );
         assert_eq!(
