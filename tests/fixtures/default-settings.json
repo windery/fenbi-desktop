@@ -1,0 +1,17 @@
+{
+  "highlight": {
+    "enabled": true,
+    "mode": "release",
+    "markKey": "KeyH",
+    "toggleKey": "KeyV",
+    "colorKey": "KeyC",
+    "colors": ["#ffd8a8", "#c3f0c8", "#ffc9de"],
+    "remember": true,
+    "retentionDays": 30
+  },
+  "split": {
+    "enabled": true,
+    "leftPercent": 50,
+    "minWidth": 1400
+  }
+}

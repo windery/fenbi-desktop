@@ -11,6 +11,9 @@
     "allow-toggle-toolbar",
     "allow-toggle-settings",
     "allow-settings-info",
+    "allow-feature-settings",
+    "allow-save-feature-settings",
+    "allow-clear-practice-marks",
     "allow-check-update",
     "allow-open-release-page"
   ]

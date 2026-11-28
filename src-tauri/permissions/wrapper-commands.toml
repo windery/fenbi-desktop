@@ -4,6 +4,13 @@ identifier = "allow-wrapper-commands"
 description = "允许注入脚本重读当前登录判定（只读共享快照）。"
 commands.allow = ["current_login_decision"]
 
+# 划词标记按练习落盘（marks.rs，2026-11-28 用户授权，仅限划词标记）：粉笔页面只能按练习读、写自己的标记，
+# 不能列举、不能删别的练习；写入由 Rust 校验结构与大小。
+[[permission]]
+identifier = "allow-practice-marks"
+description = "允许做题页按练习 id 读、写划词标记（只存题号、文字偏移、颜色）。"
+commands.allow = ["read_practice_marks", "write_practice_marks"]
+
 # 仅 debug 构建注册的诊断命令；只被 capabilities/dev/ 引用，release 不授权。
 [[permission]]
 identifier = "allow-debug-logout"

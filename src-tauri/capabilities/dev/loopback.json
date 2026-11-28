@@ -9,6 +9,7 @@
   },
   "permissions": [
     "allow-wrapper-commands",
+    "allow-practice-marks",
     "allow-toggle-toolbar",
     "allow-debug-logout"
   ],

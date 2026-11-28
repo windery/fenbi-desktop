@@ -20,6 +20,7 @@ fn main() {
         "init.js",
         "init-debug.js",
         "highlight.js",
+        "page-settings.js",
         "toolbar/shortcuts.js",
     ] {
         let src = Path::new(name);
@@ -57,6 +58,11 @@ fn main() {
                 "toggle_toolbar",
                 "toggle_settings",
                 "settings_info",
+                "feature_settings",
+                "save_feature_settings",
+                "read_practice_marks",
+                "write_practice_marks",
+                "clear_practice_marks",
                 "check_update",
                 "open_release_page",
             ])),

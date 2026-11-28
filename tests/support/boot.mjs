@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CATALOG_PATH, createEnv } from "./browser-env.mjs";
 
-export { CATALOG_PATH, PRACTICE_URL, TARGET_URL } from "./browser-env.mjs";
+export { CATALOG_PATH, DEFAULT_SETTINGS, PRACTICE_URL, TARGET_URL } from "./browser-env.mjs";
 
 const FIXTURES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../fixtures");
 export const CATALOG_URL = `https://www.fenbi.com${CATALOG_PATH}`;
@@ -45,9 +45,27 @@ export function press(env, partial) {
   return event;
 }
 
-/** 跑划词标记脚本（highlight.js）的环境；默认在做题页。 */
+/**
+ * 跑划词标记脚本（highlight.js）的环境；默认在做题页。
+ * `store` 是 Rust 那份按练习存的标记（marks.rs）的替身：同一个 store 传给下一次 bootHighlight 就是「重启应用」。
+ */
 export async function bootHighlight(overrides = {}) {
-  return boot({ url: PRACTICE_URL_FOR_HIGHLIGHT, html: "", highlight: true, ...overrides });
+  const store = overrides.store ?? new Map();
+  const env = await boot({
+    url: PRACTICE_URL_FOR_HIGHLIGHT,
+    html: "",
+    highlight: true,
+    invoke(command, args) {
+      if (command === "read_practice_marks") return Promise.resolve(structuredClone(store.get(args.practice) ?? []));
+      if (command === "write_practice_marks") {
+        if (args.marks.length) store.set(args.practice, structuredClone(args.marks));
+        else store.delete(args.practice);
+      }
+      return Promise.resolve(null);
+    },
+    ...overrides,
+  });
+  return Object.assign(env, { store });
 }
 
 const PRACTICE_URL_FOR_HIGHLIGHT = "https://spa.fenbi.com/ti/exam/exercise/1_3e_2k95rs8?routecs=syzc";

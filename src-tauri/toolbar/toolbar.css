@@ -385,10 +385,189 @@ html, body {
   to { rotate: 1turn; }
 }
 
+/* 组和组之间、最后一组到页面底部的间距。 */
+.fenbi-settings-section {
+  margin-bottom: 28px;
+}
+
+/* 设置行（「划词标记」「解析页左右分栏」两组）：附加行的高度和分隔线，第一行（总开关）不带线。 */
+.fenbi-setting {
+  min-height: 56px;
+  border-top: 1px solid #ececee;
+}
+
+.fenbi-setting-main {
+  min-height: 72px;
+  border-top: 0;
+}
+
+.fenbi-setting-name {
+  font-size: 14px;
+  color: #18181b;
+}
+
+.fenbi-setting-main .fenbi-setting-name {
+  font-weight: 600;
+}
+
+.fenbi-setting[data-disabled] .fenbi-card-text,
+.fenbi-setting[data-disabled] .fenbi-setting-value,
+.fenbi-setting[data-disabled] .fenbi-setting-unit,
+.fenbi-setting-help[data-disabled] {
+  color: #a1a1aa;
+}
+
+.fenbi-setting[data-disabled] .fenbi-setting-name,
+.fenbi-setting[data-disabled] .fenbi-card-sub {
+  color: #a1a1aa;
+}
+
+/* 怎么用的一行：副文字的样子，上下留白跟着字数长。 */
+.fenbi-setting-help {
+  padding-top: 12px;
+  padding-bottom: 12px;
+  color: #52525b;
+}
+
+/* 开关：原生复选框（role="switch"）画成 36×20 的拨钮；圆钮用渐变画，不靠伪元素。 */
+.fenbi-switch {
+  flex: none;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  border-radius: 10px;
+  background: radial-gradient(circle at 10px 50%, #fff 7px, transparent 7.5px), #d4d4d8;
+  cursor: pointer;
+  transition: background-color 120ms ease-out;
+}
+
+.fenbi-switch:checked {
+  background: radial-gradient(circle at 26px 50%, #fff 7px, transparent 7.5px), #285fb8;
+}
+
+.fenbi-switch[disabled] {
+  opacity: .5;
+  cursor: default;
+}
+
+/* 下拉框、数字框：和普通按钮同一个轮廓。 */
+.fenbi-select,
+.fenbi-number {
+  flex: none;
+  box-sizing: border-box;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(24, 24, 27, .14), 0 1px 1px rgba(24, 24, 27, .05);
+  color: #18181b;
+  font: inherit;
+}
+
+.fenbi-select {
+  -webkit-appearance: none;
+  appearance: none;
+  min-width: 140px;
+  padding: 0 30px 0 12px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%2352525b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5.2 7.6 4.8 4.8 4.8-4.8'/%3E%3C/svg%3E") no-repeat right 8px center / 16px, #fff;
+  cursor: pointer;
+}
+
+.fenbi-number {
+  width: 88px;
+  padding: 0 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.fenbi-select:focus-visible,
+.fenbi-number:focus-visible,
+.fenbi-switch:focus-visible,
+.fenbi-color:focus-visible,
+.fenbi-range:focus-visible {
+  outline: 2px solid #285fb8;
+  outline-offset: 2px;
+}
+
+.fenbi-select[disabled],
+.fenbi-number[disabled],
+.fenbi-btn[disabled] {
+  background-color: #f4f4f5;
+  color: #a1a1aa;
+  cursor: default;
+}
+
+/* 快捷键录入框：固定宽度，录入时换成蓝色轮廓。 */
+.fenbi-key {
+  width: 120px;
+  padding: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.fenbi-key[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px #285fb8;
+  color: #285fb8;
+}
+
+.fenbi-colors {
+  display: flex;
+  gap: 8px;
+}
+
+.fenbi-color {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  box-shadow: 0 0 0 1px rgba(24, 24, 27, .14);
+  cursor: pointer;
+}
+
+.fenbi-color::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.fenbi-color::-webkit-color-swatch {
+  border: 0;
+  border-radius: 8px;
+}
+
+.fenbi-color[disabled] {
+  opacity: .5;
+  cursor: default;
+}
+
+.fenbi-range {
+  flex: none;
+  width: 200px;
+  margin: 0;
+  accent-color: #285fb8;
+}
+
+.fenbi-setting-value,
+.fenbi-setting-unit {
+  flex: none;
+  color: #3f3f46;
+  font-variant-numeric: tabular-nums;
+}
+
+.fenbi-setting-value {
+  width: 40px;
+  text-align: right;
+}
+
+.fenbi-result[data-kind="hint"] .fenbi-result-dot { background: #a1a1aa; }
+
 @media (prefers-reduced-motion: reduce) {
   .fenbi-toolbar-btn,
   .fenbi-toolbar-toggle,
   .fenbi-settings-back,
-  .fenbi-btn { transition: none; }
+  .fenbi-btn,
+  .fenbi-switch { transition: none; }
   .fenbi-spinner { animation: none; }
 }
