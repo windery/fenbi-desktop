@@ -31,6 +31,7 @@
 mod login_state;
 mod marks;
 mod settings;
+mod store;
 mod toolbar;
 mod update;
 mod window_fit;
@@ -372,6 +373,7 @@ fn build_window(
             let shared = Arc::clone(&shared);
             move |w, payload| {
                 // initialization_script 里是启动时的设置；之后改过的话，新文档加载完再推一次当前值。
+                // 划词脚本收到这一次推送之前不处理输入（page-settings.js 的 ready），整页重载后不会用旧设置。
                 if payload.event() == PageLoadEvent::Finished {
                     let current = w.state::<settings::SettingsState>().current();
                     let _ = w.eval(settings::apply_script(&current));
@@ -603,9 +605,16 @@ pub fn run() {
             app.manage(Arc::clone(&shared));
             app.manage(update::UpdateState::load(update::seen_path(app.handle())));
             let feature_settings = settings::SettingsState::load(app.handle());
-            let retention = feature_settings.current().highlight.retention_days;
+            let highlight = feature_settings.current().highlight;
             app.manage(feature_settings);
-            app.manage(marks::MarksState::load(app.handle(), retention));
+            // 「记住标记」关着启动时不读标记文件、不清过期，打开时才读（marks.rs）。
+            app.manage(marks::MarksState::load(
+                app.handle(),
+                marks::Policy {
+                    remember: highlight.enabled && highlight.remember,
+                    retention_days: highlight.retention_days,
+                },
+            ));
             build_window(app.handle(), &target, &parsed_target, parsed_entry, shared)?;
             update::spawn_startup_check(app.handle());
             Ok(())

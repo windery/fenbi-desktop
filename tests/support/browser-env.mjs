@@ -234,6 +234,11 @@ class Element {
     if (this.onClick) this.onClick(this);
     this.dispatch("click");
   }
+
+  /* 记下最后一次被要求滚进视口时的参数（替身没有布局）。 */
+  scrollIntoView(options) {
+    this.scrolledIntoView = options ?? true;
+  }
 }
 
 /** 文档顺序：从根往下先序遍历的位置。 */
@@ -649,7 +654,8 @@ export function createEnv(options = {}) {
     invoke(command, args) {
       invocations.push(command);
       calls.push({ command, args });
-      return invokeImpl(command, args);
+      // 第三个参数给替身用：Rust 那边能看到调用方 WebView 的当前地址。
+      return invokeImpl(command, args, { location });
     },
   };
 
@@ -914,9 +920,9 @@ export function createEnv(options = {}) {
       return { up, click: env.click() };
     },
 
-    /** 右键（shift: true 就是 Shift+右键）点在 (x, y)。 */
+    /** 右键（shift: true 就是 Shift+右键）点在 (x, y)；命中的元素默认是 hover 给的那个，partial.target 可以改。 */
     contextMenu(x, y, partial = {}) {
-      const event = mouseEvent({ button: 2, clientX: x, clientY: y, ...partial });
+      const event = mouseEvent({ button: 2, clientX: x, clientY: y, target: pointTarget, ...partial });
       window.dispatch("contextmenu", event);
       return event;
     },

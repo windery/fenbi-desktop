@@ -11,9 +11,12 @@
  *   - 不记日志、不联网、不调站点接口。
  *   - 按练习落盘（2026-11-28 用户授权放开，仅限划词标记）：只经 read_practice_marks /
  *     write_practice_marks 两条命令交给 Rust（marks.rs）存，只存「第几道题 + 题内文字偏移 + 颜色」，
- *     不存选中的文字；设置里「记住标记」关着时一条命令都不发。
+ *     不存选中的文字；设置里「记住标记」关着时一条命令都不发。命令不带练习 id：Rust 从页面当前地址认定练习。
+ *     写盘失败由 Rust 在工具栏上提示，这里不往页面加任何提示。
+ *   - 每个文档在收到 Rust 推来的最新设置（page-settings.js 的 ready）之前什么都不做。
  *   - 浏览器不支持 CSS.highlights 时整个功能不出现。
- *   - 焦点在输入框、文本框、可编辑区域里时一律不拦键、不标记；只在真的生效时 preventDefault。
+ *   - 焦点在输入框、文本框、可编辑区域里，或在站点的弹层（对话框、弹窗）里时一律不拦键、不标记；
+ *     只在真的生效时 preventDefault。右键只在点中的就是那处标记所在的题目时才处理。
  *
  * 操作（键位和颜色都在设置页面里改，见 settings.rs 的 highlight）：
  *   拖选题目文字松手          按当前笔色标记，并取消选区让底色露出来；这次拖选不再触发站点的点击（不会误选选项）。
@@ -41,9 +44,10 @@
   /* 做题页：2026-11-28 在真实页面上核实过的两种地址（spa.fenbi.com）。
    *   /ti/exam/exercise/<id>   练习（从「练习历史 → 继续做题」进入）
    *   /ti/memorize/<id>        背题
-   * 路径必须正好是一个 id（允许结尾的 /，查询串不看）。/tiku 下的旧做题页没有核实，不写。
-   * 存标记时按「exercise:<id>」「memorize:<id>」分开（marks.rs 的 valid_practice）。 */
-  var PRACTICE_PATH = /^\/ti\/(exam\/exercise|memorize)\/([^/]+)\/?$/;
+   * 路径必须正好是一个 id（字母、数字、_、-，最长 64；允许结尾的 /，查询串不看）。/tiku 下的旧做题页没有核实，不写。
+   * 这是 marks.rs 的 practice_of 同一条规则的页面侧副本（Rust 那边才是权威，按调用方地址认定练习），
+   * tests/fixtures/practice-urls.json 锁住两边一致。存标记时「exercise:<id>」「memorize:<id>」分开。 */
+  var PRACTICE_PATH = /^\/ti\/(exam\/exercise|memorize)\/([A-Za-z0-9_-]{1,64})\/?$/;
 
   /* 一道题的容器：做题页上每道题一个 <app-ti>，整页是长列表（实测 15 题 15 个）。 */
   var QUESTION_SELECTOR = "app-ti";
@@ -55,15 +59,21 @@
   var HOVER_NAME = "fenbi-mark-hover";
   /* TreeWalker 只看文字节点（NodeFilter.SHOW_TEXT）。 */
   var SHOW_TEXT = 4;
-  /* 还有没恢复上的标记（题目还没画出来）时，隔多久再找一次。 */
-  var RETRY_MS = 500;
+  /* 隔多久看一次：地址变了没有（站点用 pushState 换页不发事件），还有没恢复上的标记要不要再找。 */
+  var WATCH_MS = 500;
+  /* 写入时 Rust 回这个串：中间点过「清除全部」，这次写入作废（marks.rs 的 STALE）。 */
+  var STALE = "stale";
+  /* 站点弹层：role / aria-modal / <dialog>，或标签名、class 带这些词（实测有 login-web-modal、
+   * fb-qrcode-login-modal、buy-member-app-popup）。焦点或点击落在里面时划词一律让路。 */
+  var LAYER_WORD = /modal|dialog|popup|overlay/i;
 
   var settings = source.get().highlight;
   /* 当前页面的全部标记：{ range, origin, color, spot }。range 是活的 Range（浏览器画它、取它的矩形），
    * origin 是标记时的四个边界，用来认出站点改过节点；color 是颜色下标；
    * spot 是 { q: 第几道题, start, end: 题内文字偏移 }，存盘和站点重绘后恢复用（算不出来时为 null）。 */
   var marks = [];
-  /* 存过但还没画上的标记：[题号, 起, 止, 颜色]。题目画出来后按偏移恢复，对不上的丢掉。 */
+  /* 存过但还没画上的标记：[题号, 起, 止, 颜色]。题目文字画出来后按偏移恢复；对不上的一直留着（照样存回去），
+   * 不因为一次没找到就当成删掉——站点常常先挂空的题目容器、过一会儿才填文字。 */
   var pending = [];
   var groups = null;
   var hoverGroup = null;
@@ -78,7 +88,11 @@
   var loaded = false;
   var dirty = false;
   var loadRun = 0;
-  var retryTimer = null;
+  /* Rust 那边的存储代次：读回来时拿到，写入时带上；「清除全部」后 Rust 推来新代次。 */
+  var generation = 0;
+  var lastPath = null;
+  /* 本次左键手势：按下时的选区边界。松手时选区和它不一样，才是这次拖出来的。 */
+  var press = null;
   var suppressClick = false;
 
   function practiceOf(path) {
@@ -92,7 +106,7 @@
   }
 
   function active() {
-    return settings.enabled && onPracticePage();
+    return source.ready() && settings.enabled && onPracticePage();
   }
 
   function remembering() {
@@ -282,17 +296,26 @@
       var spot = marks[i].spot;
       if (spot) list.push([spot.q, spot.start, spot.end, marks[i].color]);
     }
-    return list.concat(pending);
+    for (var j = 0; j < pending.length; j++) {
+      var known = false;
+      for (var k = 0; k < list.length && !known; k++) known = sameSpot({ q: list[k][0], start: list[k][1], end: list[k][2] }, pending[j]);
+      if (!known) list.push(pending[j]);
+    }
+    return list;
   }
 
+  /* 整份写给 Rust。写失败（超限、磁盘）时页面上的标记照旧留着，Rust 在工具栏上提示；
+   * 每次写都是整份，下一次改动自然把没存上的一起重试。代次过时（刚清除全部）就作废，等 Rust 推来的清除。 */
   function save() {
     if (!practice || !remembering()) return;
     if (!loaded) {
       dirty = true;
       return;
     }
+    /* 地址已经换了而还没 sync：Rust 会按新地址认练习，这时写会写到别的练习上。 */
+    if (practiceOf(location.pathname) !== practice) return;
     dirty = false;
-    call("write_practice_marks", { practice: practice, marks: records() }).catch(function () {});
+    call("write_practice_marks", { generation: generation, marks: records() }).catch(function () {});
   }
 
   function validRecord(record) {
@@ -303,11 +326,15 @@
     return record[1] < record[2] && record[3] < NAMES.length;
   }
 
-  /* 读回这份练习存的标记，和读回来之前新标的合并。读失败就不写，免得盖掉存着的。 */
+  /* 读回这份练习存的标记（Rust 按当前地址认练习，回 [代次, 标记]），和读回来之前新标的合并。
+   * 读失败就不写，免得盖掉存着的。回来时已经换了练习、或中间清除过全部（loadRun 变了），这次结果作废。 */
   function load(id) {
     var run = ++loadRun;
-    call("read_practice_marks", { practice: id }).then(function (list) {
-      if (run !== loadRun || practice !== id) return;
+    call("read_practice_marks").then(function (reply) {
+      if (run !== loadRun || practice !== id || practiceOf(location.pathname) !== id) return;
+      if (!reply || typeof reply[0] !== "number") return;
+      generation = reply[0];
+      var list = reply[1];
       loaded = true;
       for (var i = 0; list && i < list.length; i++) {
         var record = list[i];
@@ -332,42 +359,23 @@
     if (!loaded) load(next);
   }
 
-  function startRetry() {
-    if (retryTimer === null) retryTimer = setInterval(sync, RETRY_MS);
-  }
-
-  function stopRetry() {
-    if (retryTimer === null) return;
-    clearInterval(retryTimer);
-    retryTimer = null;
-  }
-
-  /* 把存着的标记按偏移画上去。题目还没画出来的留着下次再找；题目在、偏移对不上的丢掉。 */
+  /* 把存着的标记按偏移画上去。题目或文字还没画出来、偏移对不上的都留着等下次（WATCH_MS 一次），
+   * 不写盘：一次没找到不代表删了，写空会把存档抹掉。和已有标记重复的直接去掉（存的内容不变）。 */
   function resolvePending() {
-    if (!pending.length || !active()) {
-      stopRetry();
-      return;
-    }
+    if (!pending.length || !active()) return;
     var all = questions();
     var keep = [];
-    var dropped = false;
     for (var i = 0; i < pending.length; i++) {
       var record = pending[i];
       var root = all[record[0]];
-      if (!root) {
-        keep.push(record);
-        continue;
-      }
       var duplicate = false;
       for (var j = 0; j < marks.length && !duplicate; j++) duplicate = sameSpot(marks[j].spot, record);
-      var range = duplicate ? null : rangeAt(root, record[1], record[2]);
+      if (duplicate) continue;
+      var range = root ? rangeAt(root, record[1], record[2]) : null;
       if (range) addMark(range, record[3], { q: record[0], start: record[1], end: record[2] });
-      else dropped = true;
+      else keep.push(record);
     }
     pending = keep;
-    if (dropped) save();
-    if (keep.length) startRetry();
-    else stopRetry();
   }
 
   /* 站点换页或把题目节点换掉之后，范围就失效了。活 Range 在节点被摘时会把边界挪到父节点，
@@ -388,8 +396,11 @@
     }
   }
 
-  /* 每次操作、鼠标移动、滚动、前进后退时先跑一遍（站点用 pushState 换页不发事件）。 */
+  /* 每次操作、鼠标移动、滚动、前进后退时先跑一遍；站点用 pushState 换页不发事件，watch 定时补上。
+   * 收到最新设置之前什么都不做。 */
   function sync() {
+    if (!source.ready()) return;
+    lastPath = location.pathname;
     var next = practiceOf(location.pathname);
     if (next !== practice) switchPractice(next);
     prune();
@@ -503,6 +514,28 @@
     return isEditable(e.target) || isEditable(document.activeElement);
   }
 
+  /* node 在不在站点的弹层里（对话框、弹窗）。 */
+  function inLayer(node) {
+    for (var el = node && node.nodeType === 1 ? node : node && node.parentElement; el && el.nodeType === 1; el = el.parentElement) {
+      if (el.tagName === "DIALOG" || LAYER_WORD.test(el.tagName)) return true;
+      var role = el.getAttribute ? el.getAttribute("role") : null;
+      if (role === "dialog" || role === "alertdialog") return true;
+      if (el.getAttribute && el.getAttribute("aria-modal") === "true") return true;
+      if (typeof el.className === "string" && LAYER_WORD.test(el.className)) return true;
+    }
+    return false;
+  }
+
+  /* 右键真的点在这处标记所在的题目文字上：命中的元素在同一个 <app-ti> 里，且不在弹层里。
+   * 只按坐标找标记的话，盖在标记上面的弹层按钮被右键时会删掉背后的标记。 */
+  function pointsAtMark(e, mark) {
+    var target = e.target && e.target.nodeType ? e.target : null;
+    if (!target && document.elementFromPoint) target = document.elementFromPoint(e.clientX, e.clientY);
+    if (!target || inLayer(target)) return false;
+    var question = closestQuestion(mark.range.startContainer);
+    return !question || question.contains(target);
+  }
+
   /* 快捷键是「Ctrl+Alt+Shift+Meta+<KeyboardEvent.code>」的子集（settings.rs 的 valid_shortcut），修饰键全等匹配。 */
   function codeOf(e) {
     if (e.code) return e.code;
@@ -537,7 +570,7 @@
   function onKeyDown(e) {
     if (e.defaultPrevented || e.isComposing || e.repeat) return;
     sync();
-    if (!active() || typing(e)) return;
+    if (!active() || typing(e) || inLayer(e.target) || inLayer(document.activeElement)) return;
 
     var done = false;
     if (hits(e, settings.toggleKey)) {
@@ -561,18 +594,33 @@
     }
   }
 
-  function onMouseDown(e) {
-    if (e.button === 0) suppressClick = false;
+  function boundaries() {
+    var picked = selectedRange();
+    if (!picked) return null;
+    var r = picked.range;
+    return [r.startContainer, r.startOffset, r.endContainer, r.endOffset];
   }
 
-  /* 松手即标记。标上了就吞掉紧跟着的那次 click：拖选的起止点落在选项上时，
+  function onMouseDown(e) {
+    if (e.button !== 0) return;
+    suppressClick = false;
+    press = { before: boundaries() };
+  }
+
+  /* 松手即标记：只标这次按下到松开之间拖出来的选区。按下前就有、没变过的选区（比如站点的按钮用
+   * mousedown.preventDefault() 保住了旧选区）不算，那次点击照常交给站点。
+   * 标上了就吞掉紧跟着的那次 click：拖选的起止点落在选项上时，
    * 浏览器会在松手后对它们的公共祖先发 click，站点会当成点了选项。 */
   function onMouseUp(e) {
     if (e.button !== 0) return;
+    var gesture = press;
+    press = null;
     sync();
-    if (settings.mode !== "release" || !active() || hidden || typing(e)) return;
-    var picked = selectedRange();
-    if (picked && markPicked(picked, false)) suppressClick = true;
+    if (settings.mode !== "release" || !active() || hidden || typing(e) || !gesture) return;
+    var now = boundaries();
+    var before = gesture.before;
+    if (!now || (before && before[0] === now[0] && before[1] === now[1] && before[2] === now[2] && before[3] === now[3])) return;
+    if (markPicked(selectedRange(), false)) suppressClick = true;
   }
 
   function onClick(e) {
@@ -587,7 +635,7 @@
     sync();
     if (!active() || hidden) return;
     var mark = markAt(e.clientX, e.clientY);
-    if (!mark) return;
+    if (!mark || !pointsAtMark(e, mark)) return;
     e.preventDefault();
     e.stopPropagation();
     if (e.shiftKey) nextColor(mark);
@@ -613,7 +661,8 @@
     setHovered(null);
   }
 
-  /* 设置页面改了：换颜色、开关、记住与否立即生效。刚打开「记住标记」时先读回存着的再合并写入。 */
+  /* Rust 推来设置（文档加载完成时一次，之后每次保存一次）：换颜色、开关、记住与否立即生效。
+   * 刚打开「记住标记」时先读回存着的再合并写入。 */
   source.subscribe(function (next) {
     var wasRemembering = remembering();
     settings = next.highlight;
@@ -628,12 +677,23 @@
     sync();
   });
 
-  /* 设置页面点了「清除全部标记」：Rust 已经清掉了文件，这里只清页面上画着的。 */
-  window.__fenbiClearMarks = function () {
+  /* 设置页面点了「清除全部标记」：Rust 已经清掉了文件、把代次加了一。这里清掉画着的、待恢复的、待保存的，
+   * 作废还在路上的读取（loadRun），换上新代次——之后的写入只含清除之后新标的；
+   * 清除之前发出的写入 Rust 按旧代次拒绝。 */
+  window.__fenbiClearMarks = function (next) {
     clearLive();
     pending = [];
-    stopRetry();
+    dirty = false;
+    loadRun++;
+    loaded = true;
+    if (typeof next === "number") generation = next;
   };
+
+  /* 站点 pushState 换练习不发事件：定时看一眼地址，变了就 sync（换练习、读存档、恢复），不等鼠标动；
+   * 还有没恢复上的标记时也再找一次。 */
+  function watch() {
+    if (location.pathname !== lastPath || pending.length) sync();
+  }
 
   var PASSIVE = { capture: true, passive: true };
   window.addEventListener("keydown", onKeyDown, true);
@@ -652,5 +712,6 @@
     PASSIVE
   );
   window.addEventListener("blur", forgetPointer);
+  setInterval(watch, WATCH_MS);
   sync();
 })();

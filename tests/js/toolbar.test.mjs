@@ -1,7 +1,12 @@
 /* 独立本地工具栏：运行真实 toolbar.js，断言渲染和 IPC 边界。 */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { boot, bootToolbar, press } from "../support/boot.mjs";
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 test("本地工具栏默认展开，启动仅读取状态、不导航", async () => {
   const env = await bootToolbar();
@@ -402,4 +407,22 @@ test("本地工具栏显示的键位与实际动作一致，站点共用同一�
     pressLabel(env, env.hintText(env.toolbarToggle()));
     assert.equal(env.calls.at(-1).command, "toggle_toolbar");
   }
+});
+
+test("Rust 让工具栏提示一句（标记没保存上）：展开时在状态位、收起时在细条上都看得见，过一会儿自己撤掉", async () => {
+  const text = "标记没保存上：这份练习的标记太多了（最多 500 处）";
+  const env = await bootToolbar();
+  env.window.__fenbiShowError(text);
+  assert.equal(env.document.querySelector(".fenbi-toolbar-status").textContent, text);
+  assert.equal(env.document.querySelector(".fenbi-toolbar-status").getAttribute("data-kind"), "error");
+  env.advance(8000);
+  assert.equal(env.document.querySelector(".fenbi-toolbar-status").textContent, "");
+
+  const collapsed = await bootToolbar({ invoke: () => Promise.resolve([1, true]) });
+  collapsed.window.__fenbiShowError(text);
+  assert.match(collapsed.toolbarToggle().textContent, /标记没保存上/);
+
+  // Rust 那边写盘失败时就是调这个入口（marks.rs 的 notify_toolbar）
+  const rust = readFileSync(path.join(REPO_ROOT, "src-tauri/src/marks.rs"), "utf8");
+  assert.match(rust, /window\.__fenbiShowError && window\.__fenbiShowError\(/);
 });

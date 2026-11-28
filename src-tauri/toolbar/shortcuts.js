@@ -18,19 +18,23 @@
    *
    * 修饰键按"全等"匹配：没写的修饰键视为必须为假。
    * toggle 之所以要 shift，是为了不吞掉裸 ⌘B（mac 上那是加粗/站点的常用键）。 */
-  var KEY_BINDINGS = {
-    back: { mac: { meta: 1, key: "[" }, win: { alt: 1, key: "left" } },
-    forward: { mac: { meta: 1, key: "]" }, win: { alt: 1, key: "right" } },
-    reload: { mac: { meta: 1, key: "r" }, win: { ctrl: 1, key: "r" } },
-    catalog: {
-      mac: { meta: 1, shift: 1, key: "[" },
-      win: { ctrl: 1, shift: 1, key: "[" },
-    },
-    toggle: {
-      mac: { meta: 1, shift: 1, key: "b" },
-      win: { ctrl: 1, shift: 1, key: "b" },
-    },
-  };
+  var KEY_BINDINGS = /* 键位表 JSON 开始 */ {
+    "back": { "mac": { "meta": 1, "key": "[" }, "win": { "alt": 1, "key": "left" } },
+    "forward": { "mac": { "meta": 1, "key": "]" }, "win": { "alt": 1, "key": "right" } },
+    "reload": { "mac": { "meta": 1, "key": "r" }, "win": { "ctrl": 1, "key": "r" } },
+    "catalog": { "mac": { "meta": 1, "shift": 1, "key": "[" }, "win": { "ctrl": 1, "shift": 1, "key": "[" } },
+    "toggle": { "mac": { "meta": 1, "shift": 1, "key": "b" }, "win": { "ctrl": 1, "shift": 1, "key": "b" } }
+  } /* 键位表 JSON 结束 */;
+
+  /* 划词快捷键不能占的系统 / 编辑常用键（KeyboardEvent.code 写法，修饰键按 Ctrl、Alt、Shift、Meta 排）。
+   * mac 上是 ⌘ + 这些字母，Windows / Linux 上是 Ctrl + 这些字母和 Alt+F4。
+   *
+   * 上面的键位表和这张表都写成纯 JSON 夹在两行注释中间：settings.rs 用 include_str! 读这个文件、
+   * 按注释切出来解析，拿同一份定义校验存盘的设置（录入框和落盘校验不会走偏）。改格式前先看 settings.rs 的 reserved_shortcuts。 */
+  var SYSTEM_SHORTCUTS = /* 系统快捷键 JSON 开始 */ {
+    "mac": ["Meta+KeyA", "Meta+KeyC", "Meta+KeyH", "Meta+KeyM", "Meta+KeyN", "Meta+KeyQ", "Meta+KeyT", "Meta+KeyV", "Meta+KeyW", "Meta+KeyX", "Meta+KeyZ"],
+    "win": ["Ctrl+KeyA", "Ctrl+KeyC", "Ctrl+KeyH", "Ctrl+KeyM", "Ctrl+KeyN", "Ctrl+KeyQ", "Ctrl+KeyT", "Ctrl+KeyV", "Ctrl+KeyW", "Ctrl+KeyX", "Ctrl+KeyZ", "Alt+F4"]
+  } /* 系统快捷键 JSON 结束 */;
 
   /* 内部分键名 -> 按钮上给用户看的字形 */
   var KEY_FACES = {
@@ -116,5 +120,10 @@
   }
 
 
-window.__fenbiKeys = { isMac: isMacPlatform, action: shortcutAction, hint: shortcutHint };
+  /* 「Ctrl+Alt+Shift+Meta+<code>」写法的组合键是不是系统常用键。 */
+  function isSystemShortcut(shortcut, mac) {
+    return SYSTEM_SHORTCUTS[mac ? "mac" : "win"].indexOf(shortcut) >= 0;
+  }
+
+window.__fenbiKeys = { isMac: isMacPlatform, action: shortcutAction, hint: shortcutHint, isSystem: isSystemShortcut };
 })();

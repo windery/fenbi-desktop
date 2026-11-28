@@ -6,8 +6,10 @@
  * 返回 { element, load, handleKey }：element 是两组的容器；load() 读一次设置后画出来；
  * handleKey(event) 在录快捷键时吃掉按键（返回 true），工具栏自己的快捷键和 Esc 关设置页面就不会响应。
  *
- * 每改一项就把整份设置交给 Rust 保存（Rust 校验、写盘、推给粉笔页面），成功后以 Rust 回的那份为准；
- * 失败就退回原来的值并在这一组底下说原因。
+ * 每改一项就把整份设置交给 Rust 保存（Rust 校验、写盘、推给粉笔页面）。改动按操作顺序排队：
+ * 界面按「Rust 确认过的那份 + 还没确认的改动依次套上」画，同一时间只有一个保存在路上，
+ * 下一个保存从最新的本地意图算整份，连改两项不会互相盖掉。某次保存被拒，就丢掉那一批改动、
+ * 退回去并在这一组底下说原因，后面排着的改动照常保存。
  */
 (function () {
   "use strict";
@@ -19,9 +21,7 @@
   var MODIFIER_CODES = /^(Shift|Control|Alt|Meta|OS|CapsLock|Fn)/;
   var TOOLBAR_NAMES = { back: "返回上一页", forward: "前进", reload: "刷新", catalog: "回题库", toggle: "收起工具栏" };
   var KEY_NAMES = { markKey: "标记键", toggleKey: "显示 / 隐藏标记", colorKey: "切换笔色" };
-  /* 系统和编辑常用键：mac 上 ⌘ + 这些字母，Windows / Linux 上 Ctrl + 这些字母。 */
-  var SYSTEM_LETTERS = ["KeyA", "KeyC", "KeyH", "KeyM", "KeyN", "KeyQ", "KeyT", "KeyV", "KeyW", "KeyX", "KeyZ"];
-  var RETENTION = [[7, "7 天"], [30, "30 天"], [90, "90 天"], [0, "永久"]];
+  var RETENTION = [[7, "7 天"], [30, "30 天"], [90, "90 天"], [0, "永久保留"]];
 
   function el(tag, className, text) {
     var node = document.createElement(tag);
@@ -51,17 +51,22 @@
     var keys = deps.keys;
     var mac = keys.isMac();
     var root = el("div", "fenbi-features");
+    /* confirmed：Rust 最后确认存下的那份；queue：还没确认的改动（按操作顺序）；
+     * sending：在路上的那次保存带了 queue 的前几条；settings：界面按它画 = confirmed 套上 queue。 */
+    var confirmed = null;
+    var queue = [];
+    var sending = 0;
     var settings = null;
     var defaults = null;
     var ui = {};
     var recording = null;
-    var saveRun = 0;
     var ids = 0;
 
     function load() {
       call("feature_settings").then(function (pair) {
         if (!pair || !pair[0] || !pair[0].highlight) return;
-        settings = pair[0];
+        confirmed = pair[0];
+        settings = copy(confirmed);
         defaults = pair[1];
         build();
         paint();
@@ -70,25 +75,52 @@
       });
     }
 
-    function save(next, group) {
-      var run = ++saveRun;
-      call("save_feature_settings", { settings: next }).then(function (saved) {
-        if (run !== saveRun) return;
-        settings = saved;
-        showStatus(group, null);
+    function intent() {
+      var next = copy(confirmed);
+      queue.forEach(function (item) {
+        item.mutate(next);
+      });
+      return next;
+    }
+
+    function settled(groups) {
+      groups.forEach(function (group) {
+        if (!recording || recording.group !== group) showStatus(group, null);
+      });
+    }
+
+    /* 同一时间只发一个保存；回来后若还有排着的改动，再按最新意图发一次整份。 */
+    function pump() {
+      if (sending || !queue.length) return;
+      sending = queue.length;
+      var batch = queue.slice(0, sending);
+      var groups = batch.map(function (item) {
+        return item.group;
+      });
+      call("save_feature_settings", { settings: intent() }).then(function (saved) {
+        queue.splice(0, sending);
+        sending = 0;
+        confirmed = saved;
+        settings = intent();
+        settled(groups);
         paint();
+        pump();
       }, function (error) {
-        if (run !== saveRun) return;
         console.error("功能设置保存失败", error);
-        showStatus(group, "error", typeof error === "string" ? error : "设置没有保存，请重试");
+        queue.splice(0, sending);
+        sending = 0;
+        settings = intent();
+        showStatus(groups[groups.length - 1], "error", typeof error === "string" ? error : "设置保存失败，请重试");
         paint();
+        pump();
       });
     }
 
     function change(group, mutate) {
-      var next = copy(settings);
-      mutate(next);
-      save(next, group);
+      queue.push({ group: group, mutate: mutate });
+      settings = intent();
+      paint();
+      pump();
     }
 
     /* ── 行和控件 ─────────────────────────────────────── */
@@ -162,7 +194,7 @@
 
     function startRecording(field, group) {
       recording = { field: field, group: group };
-      showStatus(group, "hint", "按下新的快捷键，Esc 取消");
+      showStatus(group, "hint", "请按下新的快捷键，按 Esc 取消");
       paint();
     }
 
@@ -181,20 +213,20 @@
       return parts.join("+");
     }
 
-    /* 这个组合键为什么不能用；能用就返回空串。 */
+    /* 这个组合键为什么不能用；能用就返回空串。系统键用 shortcuts.js 的同一张表（settings.rs 落盘也查它）。 */
     function rejectReason(event, shortcut, field) {
       var action = keys.action(event, mac);
-      if (action) return keys.hint(action, mac) + " 已经是工具栏的「" + TOOLBAR_NAMES[action] + "」";
-      if (!CODE.test(event.code || "")) return "只能用字母、数字或 F1–F12，可以加修饰键";
-      var system = mac ? "Meta+" : "Ctrl+";
-      if (SYSTEM_LETTERS.indexOf(shortcut.replace(system, "")) >= 0 && shortcut.indexOf(system) === 0 && shortcut.split("+").length === 2) {
-        return keyLabel(shortcut, mac) + " 是系统快捷键";
+      if (action) return keys.hint(action, mac) + " 已用于工具栏「" + TOOLBAR_NAMES[action] + "」，请换一个（Esc 取消）";
+      if (!CODE.test(event.code || "")) {
+        return mac
+          ? "请用字母、数字或 F1–F12（可搭配 ⌘ ⌥ ⌃ ⇧），Esc 取消"
+          : "请用字母、数字或 F1–F12（可搭配 Ctrl、Alt、Shift），Esc 取消";
       }
-      if (shortcut === "Alt+F4") return "Alt+F4 是系统快捷键";
+      if (keys.isSystem(shortcut, mac)) return keyLabel(shortcut, mac) + " 是系统常用快捷键，请换一个（Esc 取消）";
       var others = Object.keys(KEY_NAMES);
       for (var i = 0; i < others.length; i++) {
         if (others[i] !== field && settings.highlight[others[i]] === shortcut) {
-          return keyLabel(shortcut, mac) + " 已经是「" + KEY_NAMES[others[i]] + "」";
+          return keyLabel(shortcut, mac) + " 已用于「" + KEY_NAMES[others[i]] + "」，请换一个（Esc 取消）";
         }
       }
       return "";
@@ -215,7 +247,7 @@
       var shortcut = shortcutOf(event);
       var reason = rejectReason(event, shortcut, field);
       if (reason) {
-        showStatus(group, "error", reason + "，换一个");
+        showStatus(group, "error", reason);
         return true;
       }
       recording = null;
@@ -245,6 +277,8 @@
       (actions || []).forEach(function (button) {
         line.appendChild(button);
       });
+      /* 「划词标记」一组很长，结果行在卡片最底下，窗口不高时会在视口外：出现时滚到能看见。 */
+      if (line.scrollIntoView) line.scrollIntoView({ block: "nearest" });
     }
 
     function button(text, className, onClick) {
@@ -263,10 +297,10 @@
           showStatus("highlight", "ok", "已清除全部标记");
         }, function (error) {
           console.error("清除标记失败", error);
-          showStatus("highlight", "error", "没有清除成功，请重试");
+          showStatus("highlight", "error", "清除失败，请重试");
         });
       });
-      showStatus("highlight", "hint", "所有练习的标记都会删掉，不能恢复", [cancel, go]);
+      showStatus("highlight", "hint", "将清空所有练习的标记，无法恢复", [cancel, go]);
       go.focus && go.focus();
     }
 
@@ -281,7 +315,7 @@
     function build() {
       root.textContent = "";
       var mark = group("划词标记");
-      ui.markOn = toggle(mark, "划词标记", "做题页给题目文字叠底色", function (s) {
+      ui.markOn = toggle(mark, "划词标记", "练习和背题页给题目、选项文字标底色", function (s) {
         return s.highlight.enabled;
       }, function (s, on) {
         s.highlight.enabled = on;
@@ -317,12 +351,12 @@
         });
       }));
 
-      ui.remember = toggle(mark, "记住标记", "按练习保存，关掉应用再打开还在", function (s) {
+      ui.remember = toggle(mark, "记住标记", "按练习保存在本机，退出重开仍在", function (s) {
         return s.highlight.remember;
       }, function (s, on) {
         s.highlight.remember = on;
       }, "highlight");
-      ui.retention = select(mark, "标记保留", RETENTION, function (s) {
+      ui.retention = select(mark, "标记保留时长", RETENTION, function (s) {
         return String(s.highlight.retentionDays);
       }, function (s, value) {
         s.highlight.retentionDays = Number(value);
@@ -333,7 +367,7 @@
       ui.highlightStatus = status(mark);
 
       var split = group("解析页左右分栏");
-      ui.splitOn = toggle(split, "解析页左右分栏", "题目在左、解析在右", function (s) {
+      ui.splitOn = toggle(split, "解析页左右分栏", "窗口够宽时，题目在左、解析在右", function (s) {
         return s.split.enabled;
       }, function (s, on) {
         s.split.enabled = on;
@@ -355,7 +389,7 @@
           next.split.leftPercent = value;
         });
       });
-      var width = row(split, "窗口多宽才分栏");
+      var width = row(split, "分栏所需窗口宽度");
       ui.widthLine = width.line;
       ui.width = labelled(width.line.appendChild(el("input", "fenbi-number")), width.label);
       ui.width.setAttribute("type", "number");
@@ -366,7 +400,7 @@
       ui.width.addEventListener("change", function () {
         var value = Number(ui.width.value);
         if (!(value >= 960 && value <= 2560) || value % 1) {
-          showStatus("split", "error", "宽度要在 960–2560 像素之间");
+          showStatus("split", "error", "请输入 960–2560 之间的整数");
           paint();
           return;
         }
@@ -386,12 +420,10 @@
       });
     }
 
+    /* 一行说清鼠标操作和清本题；显示 / 隐藏、切换笔色在下面各有一行，不重复写。 */
     function helpText(h) {
-      var mark = h.mode === "key"
-        ? "选中题目文字后按 " + keyLabel(h.markKey, mac) + " 标记"
-        : "拖选题目文字，松手就标上";
-      return mark + "；右键点标记删掉，Shift+右键换颜色；按 " + keyLabel(h.toggleKey, mac) +
-        " 显示 / 隐藏全部标记，按 " + keyLabel(h.colorKey, mac) + " 换笔色；Shift+Delete 清掉鼠标所在那道题。";
+      var mark = h.mode === "key" ? "选中按 " + keyLabel(h.markKey, mac) + " 标记" : "拖选松手即标";
+      return mark + "；标记上右键删除、Shift+右键换色；停在题上按 " + (mac ? "Shift+删除键" : "Shift+Delete") + " 清本题。";
     }
 
     /* 按当前设置刷新每个控件的值和可用状态，不重建节点（键盘焦点不丢）。 */
@@ -420,7 +452,10 @@
       setDisabled(ui.markKey.line, [ui.markKey.button], off || h.mode !== "key");
       setDisabled(ui.toggleKey.line, [ui.toggleKey.button], off);
       setDisabled(ui.colorKey.line, [ui.colorKey.button], off);
-      setDisabled(ui.colorsLine, ui.colors.concat(ui.resetColors), off);
+      setDisabled(ui.colorsLine, ui.colors, off);
+      /* 已经是默认颜色时「恢复默认」置灰。 */
+      if (off || h.colors.join(",") === defaults.highlight.colors.join(",")) ui.resetColors.setAttribute("disabled", "");
+      else ui.resetColors.removeAttribute("disabled");
       setDisabled(ui.remember.line, [ui.remember.input], off);
       setDisabled(ui.retention.line, [ui.retention.input], off || !h.remember);
       setDisabled(ui.help, [], off);

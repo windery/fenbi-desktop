@@ -98,14 +98,15 @@ test("每个控件都有名字（读屏）：开关、下拉框、录入框、�
   assert.deepEqual(env.colors.map((c) => c.getAttribute("aria-label")), ["第 1 种颜色", "第 2 种颜色", "第 3 种颜色"]);
 });
 
-test("怎么用的一行跟着键位和标记方式变", async () => {
+test("怎么用的一行（单行版）：跟着标记方式和标记键变；macOS 写「Shift+删除键」，V / C 在下面各有一行不重复写", async () => {
   const env = await bootFeatures();
-  assert.match(env.help.textContent, /拖选题目文字，松手就标上/);
-  assert.match(env.help.textContent, /右键点标记删掉，Shift\+右键换颜色/);
-  assert.match(env.help.textContent, /按 V 显示 \/ 隐藏全部标记，按 C 换笔色/);
+  assert.equal(env.help.textContent, "拖选松手即标；标记上右键删除、Shift+右键换色；停在题上按 Shift+删除键 清本题。");
   changeTo(env.mode, "key");
   await settle();
-  assert.match(env.help.textContent, /选中题目文字后按 H 标记/);
+  assert.equal(env.help.textContent, "选中按 H 标记；标记上右键删除、Shift+右键换色；停在题上按 Shift+删除键 清本题。");
+
+  const win = await bootFeatures({ platform: "Win32", current: withHighlight({ mode: "key", markKey: "Alt+KeyJ" }) });
+  assert.equal(win.help.textContent, "选中按 Alt+J 标记；标记上右键删除、Shift+右键换色；停在题上按 Shift+Delete 清本题。");
 });
 
 test("拨划词总开关：把整份设置交给 Rust 保存；关着时这一组别的控件都禁用", async () => {
@@ -164,14 +165,15 @@ test("录快捷键：点一下进入录入，按下组合键就保存；录入�
 
 test("录快捷键：和工具栏、系统、本组别的键重复，或不是字母数字 F 键，都拒绝并说原因", async () => {
   for (const [platform, keyDown, reason] of [
-    ["MacIntel", { code: "BracketLeft", key: "[", metaKey: true }, /⌘\[ 已经是工具栏的「返回上一页」/],
-    ["Win32", { code: "KeyB", key: "B", ctrlKey: true, shiftKey: true }, /Ctrl\+⇧\+B 已经是工具栏的「收起工具栏」/],
-    ["MacIntel", { code: "KeyC", key: "c" }, /C 已经是「切换笔色」/],
-    ["MacIntel", { code: "KeyH", key: "h" }, /H 已经是「标记键」/],
-    ["MacIntel", { code: "KeyC", key: "c", metaKey: true }, /⌘C 是系统快捷键/],
-    ["Win32", { code: "KeyV", key: "v", ctrlKey: true }, /Ctrl\+V 是系统快捷键/],
-    ["MacIntel", { code: "ArrowUp", key: "ArrowUp" }, /只能用字母、数字或 F1–F12/],
-    ["MacIntel", { code: "Space", key: " " }, /只能用字母、数字或 F1–F12/],
+    ["MacIntel", { code: "BracketLeft", key: "[", metaKey: true }, /^⌘\[ 已用于工具栏「返回上一页」，请换一个（Esc 取消）$/],
+    ["Win32", { code: "KeyB", key: "B", ctrlKey: true, shiftKey: true }, /^Ctrl\+⇧\+B 已用于工具栏「收起工具栏」，请换一个（Esc 取消）$/],
+    ["MacIntel", { code: "KeyC", key: "c" }, /^C 已用于「切换笔色」，请换一个（Esc 取消）$/],
+    ["MacIntel", { code: "KeyH", key: "h" }, /^H 已用于「标记键」，请换一个（Esc 取消）$/],
+    ["MacIntel", { code: "KeyC", key: "c", metaKey: true }, /^⌘C 是系统常用快捷键，请换一个（Esc 取消）$/],
+    ["Win32", { code: "KeyV", key: "v", ctrlKey: true }, /^Ctrl\+V 是系统常用快捷键，请换一个（Esc 取消）$/],
+    ["Win32", { code: "F4", key: "F4", altKey: true }, /^Alt\+F4 是系统常用快捷键，请换一个（Esc 取消）$/],
+    ["MacIntel", { code: "ArrowUp", key: "ArrowUp" }, /^请用字母、数字或 F1–F12（可搭配 ⌘ ⌥ ⌃ ⇧），Esc 取消$/],
+    ["Win32", { code: "Space", key: " " }, /^请用字母、数字或 F1–F12（可搭配 Ctrl、Alt、Shift），Esc 取消$/],
   ]) {
     const env = await bootFeatures({ platform });
     env.key("toggleKey").click();
@@ -181,6 +183,7 @@ test("录快捷键：和工具栏、系统、本组别的键重复，或不是�
     const row = env.results().at(-1);
     assert.equal(row.getAttribute("data-kind"), "error");
     assert.match(row.textContent, reason);
+    assert.ok(row.scrolledIntoView, "结果行在长卡片底部，出现时要滚进视口");
     assert.equal(env.key("toggleKey").getAttribute("aria-pressed"), "true", "被拒后还在录入，可以直接再按一个");
   }
 });
@@ -225,6 +228,87 @@ test("分栏宽度：范围外不保存、退回原值并提示；范围内保�
   assert.ok(disabled(env.ratio) && disabled(env.width));
 });
 
+/** Rust 的保存先不回：每次保存进队，由测试按顺序放行（原样存下）。 */
+function heldSaves() {
+  const held = [];
+  return {
+    held,
+    save: (settings) => new Promise((resolve) => held.push(() => resolve(clone(settings)))),
+    async releaseNext() {
+      held.shift()();
+      await settle();
+    },
+  };
+}
+
+test("第一份回执回来前连改比例和宽度：按操作顺序串行保存，最终控件、保存的整份、推给页面的都两项俱在", async () => {
+  const rust = heldSaves();
+  const env = await bootFeatures({ save: rust.save });
+  env.ratio.value = "65";
+  env.ratio.dispatch("change");
+  changeTo(env.width, "1700");
+  await settle();
+  assert.equal(env.saved.length, 1, "同一时间只有一个保存在路上");
+  assert.deepEqual([env.saved[0].split.leftPercent, env.saved[0].split.minWidth], [65, 1400]);
+  assert.equal(env.ratio.value, "65", "界面按最新意图画");
+  assert.equal(env.width.value, "1700");
+
+  await rust.releaseNext();
+  assert.equal(env.saved.length, 2);
+  assert.deepEqual([env.saved[1].split.leftPercent, env.saved[1].split.minWidth], [65, 1700], "第二份从最新意图算，不是从上次确认的快照算");
+  await rust.releaseNext();
+  assert.equal(env.ratio.value, "65");
+  assert.equal(env.width.value, "1700");
+  // Rust 每存下一份就原样推给粉笔页面：最后推出去的就是最后存下的那份
+  assert.deepEqual([env.saved.at(-1).split.leftPercent, env.saved.at(-1).split.minWidth], [65, 1700]);
+});
+
+test("第一份回执回来前关掉「记住标记」再改颜色：两项都保存，后一次不会把记住标记悄悄打开", async () => {
+  const rust = heldSaves();
+  const env = await bootFeatures({ save: rust.save });
+  changeTo(env.remember, false);
+  changeTo(env.colors[0], "#123456");
+  await settle();
+  assert.equal(env.remember.checked, false);
+  assert.equal(env.colors[0].value, "#123456");
+  await rust.releaseNext();
+  await rust.releaseNext();
+  const last = env.saved.at(-1).highlight;
+  assert.equal(last.remember, false);
+  assert.equal(last.colors[0], "#123456");
+  assert.equal(env.remember.checked, false);
+  assert.equal(env.colors[0].value, "#123456");
+});
+
+test("排着队时前一份被 Rust 拒：只退回那一批，后面排着的改动照常保存", async () => {
+  const held = [];
+  const env = await bootFeatures({ save: (settings) => new Promise((resolve, reject) => held.push({ settings, resolve, reject })) });
+  changeTo(env.markOn, false);
+  changeTo(env.splitOn, false);
+  await settle();
+  held.shift().reject("设置保存失败：磁盘满了");
+  await settle();
+  assert.equal(env.markOn.checked, true, "被拒的那项退回");
+  assert.equal(env.splitOn.checked, false);
+  assert.deepEqual([env.saved[1].highlight.enabled, env.saved[1].split.enabled], [true, false]);
+  const next = held.shift();
+  next.resolve(clone(next.settings));
+  await settle();
+  assert.equal(env.splitOn.checked, false);
+});
+
+test("颜色已经是默认时「恢复默认」置灰；改过颜色才能点", async () => {
+  const env = await bootFeatures();
+  const reset = env.all(".fenbi-reset-colors")[0];
+  assert.ok(disabled(reset));
+  changeTo(env.colors[2], "#000000");
+  await settle();
+  assert.ok(!disabled(reset));
+  reset.click();
+  await settle();
+  assert.ok(disabled(reset));
+});
+
 test("Rust 拒绝保存：说出原因，控件退回保存前的值", async () => {
   const env = await bootFeatures({ save: () => Promise.reject("设置没有保存：磁盘满了") });
   changeTo(env.markOn, false);
@@ -238,7 +322,7 @@ test("Rust 拒绝保存：说出原因，控件退回保存前的值", async () 
 test("清除全部标记：先确认一次；取消就什么都不发，确认只发一次清除命令", async () => {
   const env = await bootFeatures();
   env.all(".fenbi-clear")[0].click();
-  assert.match(env.results().at(-1).textContent, /所有练习的标记都会删掉，不能恢复/);
+  assert.match(env.results().at(-1).textContent, /将清空所有练习的标记，无法恢复/);
   env.all(".fenbi-clear-cancel")[0].click();
   assert.equal(env.results().length, 0);
   assert.equal(env.calls.filter((c) => c.command === "clear_practice_marks").length, 0);

@@ -1,17 +1,23 @@
 //! 功能设置：做题页划词标记、解析页左右分栏的开关和参数。
 //!
-//! - 存在 app_data_dir 下的 `feature-settings.json`，先写临时文件再改名，写一半断电也不会留下半个文件。
-//! - 文件读不出、不是 JSON、任何一个字段非法：整份回落默认值（不逐字段拼凑）。
+//! - 存在数据目录（store.rs，debug 构建在 `dev/` 下）的 `feature-settings.json`，先写临时文件再改名，写一半断电也不会留下半个文件。
+//! - 文件读不出、不是 JSON、任何一个字段非法（含快捷键占了工具栏或系统的键）：整份回落默认值（不逐字段拼凑）。
 //!   缺的字段按默认值补上，以后加设置项时老文件照样能读。
 //! - 读写命令只授权给本地工具栏 WebView（`capabilities/toolbar.json`），粉笔页面拿不到。
 //! - 粉笔页面拿设置只有两条路，都是 Rust 主动推：启动时拼进 initialization_script
 //!   （`page-settings.js` 的 `__FENBI_SETTINGS__`），之后保存或页面加载完成时 `eval` 推一次新值。
+//!   页面在收到加载完成后的那次推送之前不处理划词输入（见 page-settings.js），免得整页重载后用旧设置。
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use tauri::{Manager, Webview};
 
+use super::store;
 use super::toolbar::{CONTENT, require_toolbar};
+
+/// 设置文件不会超过这么大；更大的不是包装层写的，当没有。
+const MAX_FILE_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -32,7 +38,7 @@ pub struct Highlight {
     pub colors: Vec<String>,
     /// 按练习记住标记（存在 app_data_dir，见 marks.rs）。
     pub remember: bool,
-    /// 标记保留多少天（按练习最后一次修改算），启动时清过期的；0 表示永久。
+    /// 标记保留多少天（按练习最后一次修改算），读标记文件时（启动或刚打开「记住标记」）清过期的；0 表示永久。
     pub retention_days: u32,
 }
 
@@ -112,6 +118,78 @@ pub fn valid_shortcut(shortcut: &str) -> bool {
             .is_some_and(|n| (1..=12).contains(&n) && code == format!("F{n}"))
 }
 
+/// shortcuts.js 里夹在「/* <name> JSON 开始 */」「/* <name> JSON 结束 */」之间的那段 JSON。
+fn json_block<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    let start = format!("/* {name} JSON 开始 */");
+    let end = format!("/* {name} JSON 结束 */");
+    let from = source.find(&start)? + start.len();
+    let to = from + source[from..].find(&end)?;
+    Some(&source[from..to])
+}
+
+#[derive(Deserialize)]
+struct Binding {
+    #[serde(default)]
+    ctrl: u8,
+    #[serde(default)]
+    alt: u8,
+    #[serde(default)]
+    shift: u8,
+    #[serde(default)]
+    meta: u8,
+    key: String,
+}
+
+impl Binding {
+    /// 工具栏键位 → 「Ctrl+Alt+Shift+Meta+<code>」写法。
+    fn shortcut(&self) -> Option<String> {
+        let code = match self.key.as_str() {
+            "[" => "BracketLeft".to_string(),
+            "]" => "BracketRight".to_string(),
+            "left" => "ArrowLeft".to_string(),
+            "right" => "ArrowRight".to_string(),
+            k if k.len() == 1 && k.chars().all(|c| c.is_ascii_lowercase()) => {
+                format!("Key{}", k.to_ascii_uppercase())
+            }
+            _ => return None,
+        };
+        let flags = [self.ctrl, self.alt, self.shift, self.meta];
+        let mut parts: Vec<String> = MODIFIERS
+            .iter()
+            .zip(flags)
+            .filter(|(_, on)| *on != 0)
+            .map(|(m, _)| m.to_string())
+            .collect();
+        parts.push(code);
+        Some(parts.join("+"))
+    }
+}
+
+/// 划词快捷键不能占的键：(mac, Windows / Linux)。和设置页面录入框查的是同一份定义——
+/// shortcuts.js 的工具栏键位表和系统快捷键表（两段纯 JSON），这里 include_str! 进来解析。
+static RESERVED: LazyLock<(Vec<String>, Vec<String>)> = LazyLock::new(|| {
+    let source = include_str!("../toolbar/shortcuts.js");
+    let bindings: BTreeMap<String, BTreeMap<String, Binding>> = json_block(source, "键位表")
+        .and_then(|text| serde_json::from_str(text).ok())
+        .unwrap_or_default();
+    let system: BTreeMap<String, Vec<String>> = json_block(source, "系统快捷键")
+        .and_then(|text| serde_json::from_str(text).ok())
+        .unwrap_or_default();
+    let collect = |platform: &str| {
+        let mut keys: Vec<String> = bindings
+            .values()
+            .filter_map(|per| per.get(platform).and_then(Binding::shortcut))
+            .collect();
+        keys.extend(system.get(platform).cloned().unwrap_or_default());
+        keys
+    };
+    (collect("mac"), collect("win"))
+});
+
+fn reserved_shortcuts(mac: bool) -> &'static [String] {
+    if mac { &RESERVED.0 } else { &RESERVED.1 }
+}
+
 fn valid_color(color: &str) -> bool {
     color.len() == 7
         && color.starts_with('#')
@@ -121,24 +199,32 @@ fn valid_color(color: &str) -> bool {
 }
 
 impl Settings {
-    /// 返回第一条不合法的原因（给设置页面看的人话）。
+    /// 返回第一条不合法的原因（给设置页面看的人话）。按当前平台查保留键。
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_on(cfg!(target_os = "macos"))
+    }
+
+    fn validate_on(&self, mac: bool) -> Result<(), String> {
         let h = &self.highlight;
         if !MODES.contains(&h.mode.as_str()) {
             return Err("标记方式只能是「松手即标记」或「选中后按键标记」".into());
         }
         let keys = [&h.mark_key, &h.toggle_key, &h.color_key];
         if !keys.iter().all(|k| valid_shortcut(k)) {
-            return Err("快捷键只能用字母、数字或 F1–F12，可以加修饰键".into());
+            return Err("快捷键请用字母、数字或 F1–F12（可搭配修饰键）".into());
         }
         if keys[0] == keys[1] || keys[0] == keys[2] || keys[1] == keys[2] {
             return Err("划词标记的几个快捷键不能重复".into());
+        }
+        let reserved = reserved_shortcuts(mac);
+        if let Some(key) = keys.iter().find(|k| reserved.contains(k)) {
+            return Err(format!("{key} 已用于工具栏或系统，请换一个"));
         }
         if h.colors.len() != DEFAULT_COLORS.len() || !h.colors.iter().all(|c| valid_color(c)) {
             return Err("颜色要写成 #rrggbb，共 3 种".into());
         }
         if !RETENTION_DAYS.contains(&h.retention_days) {
-            return Err("标记保留天数只能是 7、30、90 天或永久".into());
+            return Err("标记保留时长只能是 7、30、90 天或永久保留".into());
         }
         let s = &self.split;
         if !(LEFT_PERCENT.0..=LEFT_PERCENT.1).contains(&s.left_percent) {
@@ -149,7 +235,7 @@ impl Settings {
         }
         if !(MIN_WIDTH.0..=MIN_WIDTH.1).contains(&s.min_width) {
             return Err(format!(
-                "分栏宽度要在 {}–{} 像素之间",
+                "分栏所需窗口宽度请输入 {}–{} 之间的整数",
                 MIN_WIDTH.0, MIN_WIDTH.1
             ));
         }
@@ -165,7 +251,7 @@ impl Settings {
     }
 
     fn load(path: Option<&Path>) -> Self {
-        path.and_then(|p| std::fs::read_to_string(p).ok())
+        path.and_then(|p| store::read_capped(p, MAX_FILE_BYTES))
             .map(|text| Self::parse(&text))
             .unwrap_or_default()
     }
@@ -176,15 +262,9 @@ impl Settings {
     }
 }
 
-/// 先写同目录的临时文件再改名：改名是原子的，读的一方要么看到旧文件，要么看到新文件。
 fn write_atomically(path: &Path, settings: &Settings) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let pending = path.with_extension("json.tmp");
     let text = serde_json::to_vec_pretty(settings).map_err(std::io::Error::other)?;
-    std::fs::write(&pending, text)?;
-    std::fs::rename(&pending, path)
+    store::write_atomically(path, &text)
 }
 
 pub struct SettingsState {
@@ -194,11 +274,7 @@ pub struct SettingsState {
 
 impl SettingsState {
     pub fn load(app: &tauri::AppHandle) -> Self {
-        let path = app
-            .path()
-            .app_data_dir()
-            .ok()
-            .map(|p| p.join("feature-settings.json"));
+        let path = store::data_dir(app).map(|dir| dir.join("feature-settings.json"));
         Self {
             current: Mutex::new(Settings::load(path.as_deref())),
             path,
@@ -213,7 +289,7 @@ impl SettingsState {
         next.validate()?;
         let path = self.path.as_deref().ok_or("找不到应用数据目录")?;
         let mut current = self.current.lock().map_err(|e| e.to_string())?;
-        write_atomically(path, &next).map_err(|e| format!("设置没有保存：{e}"))?;
+        write_atomically(path, &next).map_err(|e| format!("设置保存失败：{e}"))?;
         *current = next.clone();
         Ok(next)
     }
@@ -246,6 +322,7 @@ pub fn save_feature_settings(
 ) -> Result<Settings, String> {
     require_toolbar(webview.label())?;
     let saved = app.state::<SettingsState>().save(settings)?;
+    super::marks::on_settings_saved(&app);
     if let Some(content) = app.get_webview(CONTENT) {
         let _ = content.eval(apply_script(&saved));
     }
@@ -268,7 +345,7 @@ mod tests {
 
     #[test]
     fn a_saved_file_reads_back_the_same() {
-        let dir = std::env::temp_dir().join(format!("fenbi-settings-{}", std::process::id()));
+        let dir = store::temp_dir("settings");
         let path = dir.join("feature-settings.json");
         let mut settings = Settings::default();
         settings.highlight.mode = "key".into();
@@ -276,8 +353,9 @@ mod tests {
         settings.split.left_percent = 40;
         write_atomically(&path, &settings).unwrap();
         assert_eq!(Settings::load(Some(&path)), settings);
-        assert!(
-            !path.with_extension("json.tmp").exists(),
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
             "临时文件要改名掉"
         );
         let _ = std::fs::remove_dir_all(dir);
@@ -319,6 +397,62 @@ mod tests {
         for text in invalid {
             assert_eq!(Settings::parse(text), Settings::default(), "{text}");
         }
+    }
+
+    #[test]
+    fn a_key_taken_by_the_toolbar_or_the_system_resets_the_whole_file() {
+        // 和录入框同一份定义（shortcuts.js 的两张表）：这里核对解析出来的内容，免得 JSON 被改坏后悄悄变空。
+        let mac = reserved_shortcuts(true);
+        let win = reserved_shortcuts(false);
+        for key in [
+            "Meta+BracketLeft",
+            "Meta+KeyR",
+            "Shift+Meta+KeyB",
+            "Meta+KeyC",
+            "Meta+KeyV",
+        ] {
+            assert!(mac.iter().any(|k| k == key), "mac {key}");
+        }
+        for key in [
+            "Alt+ArrowLeft",
+            "Ctrl+KeyR",
+            "Ctrl+Shift+KeyB",
+            "Ctrl+KeyV",
+            "Alt+F4",
+        ] {
+            assert!(win.iter().any(|k| k == key), "win {key}");
+        }
+        for (mac, key) in [
+            (true, "Meta+KeyR"),
+            (true, "Shift+Meta+KeyB"),
+            (true, "Meta+KeyC"),
+            (false, "Ctrl+KeyR"),
+            (false, "Alt+F4"),
+        ] {
+            let mut settings = Settings::default();
+            settings.split.left_percent = 40;
+            settings.highlight.toggle_key = key.into();
+            assert!(settings.validate_on(mac).is_err(), "{mac} {key}");
+        }
+        let mut fine = Settings::default();
+        fine.highlight.toggle_key = "Meta+KeyR".into();
+        assert!(
+            fine.validate_on(false).is_ok(),
+            "mac 的键在 Windows 上不算占用"
+        );
+        let text = format!(
+            r#"{{"split":{{"leftPercent":40}},"highlight":{{"toggleKey":"{}"}}}}"#,
+            if cfg!(target_os = "macos") {
+                "Meta+KeyR"
+            } else {
+                "Ctrl+KeyR"
+            }
+        );
+        assert_eq!(
+            Settings::parse(&text),
+            Settings::default(),
+            "一项冲突整份回落"
+        );
     }
 
     #[test]
