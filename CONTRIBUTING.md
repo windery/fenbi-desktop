@@ -567,6 +567,8 @@ BEACON: open login modal :: logged-out
 | `FENBI_DEBUG_DROP_AFTER=8000` | 仅 debug 构建：8 秒后驱动站点退出登录，用来验证登出检测 |
 | `FENBI_DEBUG_HEARTBEAT_MS=10000` | 把 5 分钟心跳缩短，便于测试 |
 | `FENBI_INIT_JS` | **仅测试用**：让 JS 测试跑另一份 `init.js`（见「检查与测试」） |
+| `HTTPS_PROXY` / `ALL_PROXY` / `HTTP_PROXY`（大小写都认） | 检查更新走的代理。设了就不再读系统设置里的代理；都没设时 Windows、macOS 用系统设置里的 HTTPS 代理（见 `update.rs` 的 `update_proxy`） |
+| `NO_PROXY`（大小写都认） | 检查更新不走代理的主机，逗号分隔。代理来自环境变量还是系统设置都生效；系统设置里的排除项只配系统设置里的代理 |
 
 两个 URL 覆盖会被校验：只接受 `https`，回环地址额外允许 `http`。
 `file:` / `javascript:` 这类 scheme 会在建窗口之前就被拒绝。

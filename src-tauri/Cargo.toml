@@ -29,11 +29,17 @@ tauri-plugin-window-state = "=2.4.0"
 tauri-plugin-single-instance = "=2.4.5"
 # 检查更新只发一个 HTTPS GET（见 update.rs）。同步客户端，放在后台线程里调；
 # 关掉默认 feature，只留 rustls，三个平台行为一致。
+# 不开 win-system-proxy：它把 Windows 系统设置里的排除项套到环境变量代理上，也读不懂
+# 按协议分开的代理写法。系统代理由 update.rs 自己读（守卫测试见 update.rs）。
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 # 「下载新版」让系统浏览器打开发布页（见 update.rs 的 open_release_page），只开那一个写死的网址。
 open = "5"
 # 比较版本号。tauri 自己已经依赖它，不多编一份。
 semver = "1"
+
+# 检查更新读 Windows 系统设置里的代理（见 update.rs 的 system_proxy）。
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
 
 # Linux 上 tauri-runtime-wry 把子 WebView pack 进窗口的 GtkBox，`set_bounds` 是空操作，
 # 布局要直接改 GTK packing（见 toolbar.rs 的 linux 版 layout）。版本与 tauri 用的一致。
