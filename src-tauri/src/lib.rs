@@ -29,6 +29,9 @@
 //   * login.fenbi.com/api/users/{info,current} 在未登录时也返回 200 + userId，不可作判据
 
 mod login_state;
+mod marks;
+mod settings;
+mod store;
 mod toolbar;
 mod update;
 mod window_fit;
@@ -294,9 +297,16 @@ fn build_window(
     // 跳转目标用 JSON 序列化嵌进脚本，而不是手工转义引号——
     // 序列化器负责所有转义，目标里出现换行或引号也逃不出字符串字面量。
     let target_literal = serde_json::to_string(parsed_target.as_str())?;
+    // page-settings.js 带着启动时的功能设置排在最前面，init.js（分栏）和 highlight.js 从它读。
     // highlight.js 是做题页的划词标记（docs/adr/0004），独立成文件、自己判断做题页。
+    let page_settings = load_script("page-settings.js", include_str!("../page-settings.js"))
+        .replace(
+            "__FENBI_SETTINGS__",
+            &app.state::<settings::SettingsState>().current().to_js(),
+        );
     let script = format!(
-        "{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}",
+        page_settings,
         load_script("shortcuts.js", include_str!("../toolbar/shortcuts.js")),
         load_script("init.js", include_str!("../init.js")),
         load_script("highlight.js", include_str!("../highlight.js")),
@@ -362,6 +372,12 @@ fn build_window(
         .on_page_load({
             let shared = Arc::clone(&shared);
             move |w, payload| {
+                // initialization_script 里是启动时的设置；之后改过的话，新文档加载完再推一次当前值。
+                // 划词脚本收到这一次推送之前不处理输入（page-settings.js 的 ready），整页重载后不会用旧设置。
+                if payload.event() == PageLoadEvent::Finished {
+                    let current = w.state::<settings::SettingsState>().current();
+                    let _ = w.eval(settings::apply_script(&current));
+                }
                 // Started 后立刻在锁外喊一次，让还在旧文档里的轮询重读 pending。
                 handle_page_event(&shared, payload.event(), shared.now_ms(), || {
                     refresh_page_decision(&w)
@@ -573,6 +589,11 @@ pub fn run() {
             toolbar::toggle_toolbar,
             toolbar::toggle_settings,
             update::settings_info,
+            settings::feature_settings,
+            settings::save_feature_settings,
+            marks::read_practice_marks,
+            marks::write_practice_marks,
+            marks::clear_practice_marks,
             update::check_update,
             update::open_release_page,
             #[cfg(debug_assertions)]
@@ -583,6 +604,17 @@ pub fn run() {
             let shared = Arc::new(WatchShared::new(heartbeat_interval_ms()));
             app.manage(Arc::clone(&shared));
             app.manage(update::UpdateState::load(update::seen_path(app.handle())));
+            let feature_settings = settings::SettingsState::load(app.handle());
+            let highlight = feature_settings.current().highlight;
+            app.manage(feature_settings);
+            // 「记住标记」关着启动时不读标记文件、不清过期，打开时才读（marks.rs）。
+            app.manage(marks::MarksState::load(
+                app.handle(),
+                marks::Policy {
+                    remember: highlight.enabled && highlight.remember,
+                    retention_days: highlight.retention_days,
+                },
+            ));
             build_window(app.handle(), &target, &parsed_target, parsed_entry, shared)?;
             update::spawn_startup_check(app.handle());
             Ok(())

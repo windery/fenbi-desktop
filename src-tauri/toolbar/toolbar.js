@@ -16,6 +16,8 @@
   var hasUpdate = false;
   var settingsOpen = false;
   var settingsPage = null;
+  /* 设置页面里「划词标记」「解析页左右分栏」两组（feature-settings.js），设置页面开着时才有。 */
+  var features = null;
   /* 「版本与更新」卡片的状态。check 只管手动检查：idle / checking / ok / error；
      已知的新版记在 newerVersion，启动时查到的和手动查到的都算。 */
   var currentVersion = "";
@@ -82,7 +84,7 @@
       status.setAttribute("data-kind", errorText ? "error" : "hint");
     }
     if (currentState === "collapsed" && toggleLabel) {
-      toggleLabel.textContent = errorText ? "操作未完成，请重试" : "展开";
+      toggleLabel.textContent = errorText || "展开";
     }
   }
 
@@ -100,12 +102,15 @@
     errorText = "";
     paintStatus();
   }
-  function report(error) {
-    console.error("工具栏操作失败", error);
-    errorText = "操作未完成，请重试";
+  function showError(text, ms) {
+    errorText = text;
     paintStatus();
     if (errorTimer !== null) clearTimeout(errorTimer);
-    errorTimer = setTimeout(clearError, 4000);
+    errorTimer = setTimeout(clearError, ms);
+  }
+  function report(error) {
+    console.error("工具栏操作失败", error);
+    showError("操作未完成，请重试", 4000);
   }
 
   function refresh() {
@@ -207,6 +212,9 @@
     head.appendChild(title);
     column.appendChild(head);
     column.appendChild(buildUpdateGroup());
+    features = window.__fenbiFeatureSettings({ call: call, keys: keys });
+    column.appendChild(features.element);
+    features.load();
     page.appendChild(column);
     return page;
   }
@@ -346,6 +354,7 @@
     if (settingsPage && !wantSettings) {
       host.removeChild(settingsPage);
       settingsPage = null;
+      features = null;
       card = null;
     } else if (wantSettings && !settingsPage) {
       settingsPage = host.appendChild(buildSettingsPage());
@@ -396,10 +405,16 @@
     if (currentState === "collapsed" && event.target === bar) runShortcut("toggle");
   });
   window.__fenbiRefreshToolbar = refresh;
+  /* Rust 让工具栏提示一句（目前只有划词标记没存上，marks.rs 的 notify_toolbar）。
+   * 提示画在横栏的状态位上，粉笔页面里不加任何东西；比按钮报错多停一会儿。 */
+  window.__fenbiShowError = function (text) {
+    showError(String(text), 8000);
+  };
   function isPlainEscape(event) {
     return event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
   }
   window.addEventListener("keydown", function (event) {
+    if (features && features.handleKey(event)) return;
     var closing = settingsOpen && isPlainEscape(event);
     var action = keys.action(event, keys.isMac());
     if (!closing && !action) return;

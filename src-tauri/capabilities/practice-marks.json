@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "practice-marks",
+  "description": "划词标记按练习落盘（marks.rs，2026-11-28 用户授权，仅限划词标记）。单独一份：只给做题页所在的 spa.fenbi.com，不挂在整个粉笔域的 default 上。两条命令都不收练习 id，Rust 从调用方 WebView 的当前地址认定练习，不是做题页就拒绝（docs/adr/0004）。",
+  "remote": {
+    "urls": [
+      "https://spa.fenbi.com"
+    ]
+  },
+  "permissions": [
+    "allow-practice-marks"
+  ],
+  "webviews": [
+    "main"
+  ],
+  "local": false
+}

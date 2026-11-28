@@ -23,6 +23,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "=2.11.5", features = ["unstable"] }
 # 只用于把跳转目标序列化成 JS 字符串字面量，见 lib.rs 的 build_window
 serde_json = "1"
+# 功能设置文件（settings.rs）的读写。tauri 自己已经依赖它，不多编一份。
+serde = { version = "1", features = ["derive"] }
 # 记住窗口尺寸/位置/最大化状态。2.5 起要求 tauri 2.12，所以同样钉死。
 tauri-plugin-window-state = "=2.4.0"
 # 第二次启动时把已有窗口叫到前台，不多开（#7）。2.5 起要求 tauri 2.12，同样钉死。

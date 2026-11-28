@@ -20,6 +20,14 @@ export const TARGET_URL = "https://www.fenbi.com/spa/tiku/guide/catalog";
 export const CATALOG_PATH = "/spa/tiku/guide/catalog";
 export const PRACTICE_URL = "https://spa.fenbi.com/ti/exam/exercise/1234567";
 
+/** Rust 注入的默认功能设置（settings.rs 的 Settings::default，Rust 测试锁住两边一致）。 */
+export const DEFAULT_SETTINGS = JSON.parse(readFileSync(path.join(REPO_ROOT, "tests/fixtures/default-settings.json"), "utf8"));
+
+/** page-settings.js：Rust 把启动时的设置填进 __FENBI_SETTINGS__，拼在注入脚本最前面。 */
+export function pageSettingsSource(settings = DEFAULT_SETTINGS) {
+  return readFileSync(path.join(REPO_ROOT, "src-tauri/page-settings.js"), "utf8").replace("__FENBI_SETTINGS__", JSON.stringify(settings));
+}
+
 /** init.js 的原始文本，占位符已替换成可在 Node 里执行的字面量。 */
 export function initSource() {
   const file = process.env.FENBI_INIT_JS ?? DEFAULT_INIT_JS;
@@ -142,8 +150,20 @@ class Element {
     return this.children[0] ?? null;
   }
 
+  get childNodes() {
+    return this.children;
+  }
+
+  compareDocumentPosition(other) {
+    return comparePosition(this, other);
+  }
+
   setAttribute(name, value) {
     this.attributes[name] = value;
+  }
+
+  removeAttribute(name) {
+    delete this.attributes[name];
   }
 
   getAttribute(name) {
@@ -214,14 +234,52 @@ class Element {
     if (this.onClick) this.onClick(this);
     this.dispatch("click");
   }
+
+  /* 记下最后一次被要求滚进视口时的参数（替身没有布局）。 */
+  scrollIntoView(options) {
+    this.scrolledIntoView = options ?? true;
+  }
 }
 
-/** 文字节点：划词标记的范围挂在它上面。只有父节点和是否在文档里两件事。 */
+/** 文档顺序：从根往下先序遍历的位置。 */
+function documentOrder(node) {
+  let root = node;
+  while (root.parentNode) root = root.parentNode;
+  const order = [];
+  const visit = (at) => {
+    order.push(at);
+    for (const child of at.children ?? []) visit(child);
+  };
+  visit(root);
+  return order;
+}
+
+/** Node.compareDocumentPosition 的子集：4 = other 在后面，16 = other 在里面（同时也算在后面）。 */
+function comparePosition(node, other) {
+  const order = documentOrder(node);
+  const a = order.indexOf(node);
+  const b = order.indexOf(other);
+  if (a < 0 || b < 0) return 1;
+  let inside = false;
+  for (let at = other.parentNode; at; at = at.parentNode) if (at === node) inside = true;
+  return b > a ? 4 | (inside ? 16 : 0) : 2;
+}
+
+/** 文字节点：划词标记的范围挂在它上面。只有父节点、长度（字符数）和是否在文档里。不存文字。 */
 class TextNode {
-  constructor(parent) {
+  constructor(parent, length = 20) {
     this.nodeType = 3;
     this.parentNode = null;
+    this.length = length;
     if (parent) parent.appendChild(this);
+  }
+
+  compareDocumentPosition(other) {
+    return comparePosition(this, other);
+  }
+
+  contains(node) {
+    return node === this;
   }
 
   get parentElement() {
@@ -249,6 +307,16 @@ class FakeRange {
 
   cloneRange() {
     return new FakeRange(this.startContainer, this.startOffset, this.endContainer, this.endOffset, this.rects, this.live);
+  }
+
+  setStart(node, offset) {
+    this.startContainer = node;
+    this.startOffset = offset;
+  }
+
+  setEnd(node, offset) {
+    this.endContainer = node;
+    this.endOffset = offset;
   }
 
   getClientRects() {
@@ -337,6 +405,27 @@ function matches(element, selectorList) {
   });
 }
 
+/** 鼠标事件替身：记下有没有被 preventDefault / 拦下传播。 */
+function mouseEvent(partial) {
+  const event = {
+    defaultPrevented: false,
+    propagationStopped: false,
+    immediatePropagationStopped: false,
+    preventDefault() {
+      event.defaultPrevented = true;
+    },
+    stopPropagation() {
+      event.propagationStopped = true;
+    },
+    stopImmediatePropagation() {
+      event.propagationStopped = true;
+      event.immediatePropagationStopped = true;
+    },
+    ...partial,
+  };
+  return event;
+}
+
 /* ------------------------------------------------------------------ *
  * 环境
  * ------------------------------------------------------------------ */
@@ -410,6 +499,7 @@ export function createEnv(options = {}) {
   let pointTarget = null;
   const selection = new FakeSelection();
   const liveRanges = new Set();
+  const rectsFor = new Map();
 
   const document = {
     readyState: options.domReady === false ? "loading" : "complete",
@@ -441,6 +531,27 @@ export function createEnv(options = {}) {
     },
     querySelector(selector) {
       return document.querySelectorAll(selector)[0] ?? null;
+    },
+    /* 只支持划词脚本用到的：按文档顺序列出 root 里的文字节点。 */
+    createTreeWalker(root, whatToShow) {
+      if (whatToShow !== 4) throw new Error("替身的 TreeWalker 只认 SHOW_TEXT");
+      const nodes = documentOrder(root).filter((node) => node.nodeType === 3 && root.contains(node));
+      let at = -1;
+      return {
+        nextNode() {
+          at++;
+          return nodes[at] ?? null;
+        },
+      };
+    },
+    /* 划词脚本按偏移恢复标记时建的 Range：落在哪里就把那里的屏幕矩形给它（测试用 env.rectsFor 摆）。 */
+    createRange() {
+      const range = new FakeRange(null, 0, null, 0, [], liveRanges);
+      Object.defineProperty(range, "rects", {
+        get: () => (range.startContainer && rectsFor.get(range.startContainer)) || [],
+        set() {},
+      });
+      return range;
     },
   };
   const head = new Element("head");
@@ -543,7 +654,8 @@ export function createEnv(options = {}) {
     invoke(command, args) {
       invocations.push(command);
       calls.push({ command, args });
-      return invokeImpl(command, args);
+      // 第三个参数给替身用：Rust 那边能看到调用方 WebView 的当前地址。
+      return invokeImpl(command, args, { location });
     },
   };
 
@@ -603,11 +715,11 @@ export function createEnv(options = {}) {
 
   const names = Object.keys(sandbox);
   // 用 new Function 把 init.js 的源码直接跑起来：测的是真实实现，不是副本。
+  // 粉笔页面的两种脚本都和生产一样，前面先跑 page-settings.js（带 options.settings）。
   const source = options.toolbar
-    ? readFileSync(path.join(REPO_ROOT, "src-tauri/toolbar/shortcuts.js"), "utf8") + "\n" + readFileSync(path.join(REPO_ROOT, "src-tauri/toolbar/toolbar.js"), "utf8")
-    : options.highlight
-      ? readFileSync(path.join(REPO_ROOT, "src-tauri/highlight.js"), "utf8")
-      : initSource();
+    ? ["shortcuts.js", "feature-settings.js", "toolbar.js"].map((name) => readFileSync(path.join(REPO_ROOT, "src-tauri/toolbar", name), "utf8")).join("\n")
+    : pageSettingsSource(options.settings) + "\n" +
+      (options.highlight ? readFileSync(path.join(REPO_ROOT, "src-tauri/highlight.js"), "utf8") : initSource());
   new Function(...names, source)(...Object.values(sandbox));
 
   const env = {
@@ -624,6 +736,11 @@ export function createEnv(options = {}) {
     logs,
     history,
     localStorage: localStore,
+
+    /** Rust 保存设置后推给粉笔页面（生产里是 eval 这一句）。 */
+    applySettings(settings) {
+      window.__fenbiApplySettings(settings);
+    },
 
     /** 让 Promise 回调跑完。 */
     async tick() {
@@ -768,9 +885,46 @@ export function createEnv(options = {}) {
       return parent.appendChild(new Element(tag, className));
     },
 
-    /** 在 parent 下面建一个文字节点。 */
-    textNode(parent) {
-      return new TextNode(parent);
+    /** 在 parent 下面建一个文字节点（默认 20 个字符）。 */
+    textNode(parent, length) {
+      return new TextNode(parent, length);
+    },
+
+    /** 文字节点 node 在屏幕上占的矩形：按偏移恢复出来的标记从这里取位置。 */
+    rectsFor(node, rects) {
+      rectsFor.set(node, rects);
+    },
+
+    /** 鼠标按下、松开（左键），返回松开那次的事件。 */
+    mouseDown(x = 0, y = 0) {
+      window.dispatch("mousedown", { button: 0, clientX: x, clientY: y });
+    },
+    mouseUp(x = 0, y = 0, partial = {}) {
+      const event = mouseEvent({ button: 0, clientX: x, clientY: y, ...partial });
+      window.dispatch("mouseup", event);
+      return event;
+    },
+
+    /** 浏览器在松手后发的 click（站点靠它选选项）。返回事件，看有没有被拦。 */
+    click(partial = {}) {
+      const event = mouseEvent({ button: 0, detail: 1, ...partial });
+      window.dispatch("click", event);
+      return event;
+    },
+
+    /** 用户拖选：按下 → 选中 → 松开 → 浏览器补发 click。返回 { up, click }。 */
+    drag(node, start, end, rects, endNode = node) {
+      env.mouseDown();
+      env.selectAcross(node, start, endNode, end, rects);
+      const up = env.mouseUp();
+      return { up, click: env.click() };
+    },
+
+    /** 右键（shift: true 就是 Shift+右键）点在 (x, y)；命中的元素默认是 hover 给的那个，partial.target 可以改。 */
+    contextMenu(x, y, partial = {}) {
+      const event = mouseEvent({ button: 2, clientX: x, clientY: y, target: pointTarget, ...partial });
+      window.dispatch("contextmenu", event);
+      return event;
     },
 
     /** 用户选中了 node 上 [start, end) 这一段，屏幕上占 rects 这些矩形。 */

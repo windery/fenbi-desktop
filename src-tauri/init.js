@@ -182,38 +182,45 @@
    *     └ APP-RESULT-COMMON      解析视频 / 解析 / 考点 / 来源 / 笔记 -> 右栏，从上到下原样
    *
    * 只改布局：三块都在才分栏（:has 同时要求），任何一块对不上（站点改版）规则就不命中，
-   * 页面退回原来的上下排。两栏都是 minmax(0, 1fr)：站点给图片设了 max-width: 100%，
+   * 页面退回原来的上下排。两栏都是 minmax(0, Nfr)（N 按左栏占比）：站点给图片设了 max-width: 100%，
    * 解析视频也会跟着栏宽缩放，所以两栏都能缩，不会把卡片撑出去。
    * 右栏顶上原本留给统计条的 margin-top 去掉，和题目顶端对齐。
    * 和 E 类一起生效时不打架：没开会员时视频块被藏掉，右栏从「解析」开始。
    *
    * ⚠️ 带 :has()，必须单独成条（理由同 E 类）；不认 :has() 的旧 WebView 上只是不分栏。 */
-  var SPLIT_MIN_WIDTH = 1400;
   var SPLIT_CONTAINER =
     ".solution-choice-container:has(> app-question-choice):has(> app-solution-overall):has(> app-result-common)";
-  var SPLIT_SOLUTION_CSS =
-    "@media (min-width: " + SPLIT_MIN_WIDTH + "px) {\n" +
-    SPLIT_CONTAINER + " {\n" +
-    "  display: grid !important;\n" +
-    "  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;\n" +
-    "  grid-template-rows: auto 1fr !important;\n" +
-    "  column-gap: 24px !important;\n" +
-    "  align-items: start !important;\n" +
-    "}\n" +
-    SPLIT_CONTAINER + " > app-question-choice {\n" +
-    "  grid-column: 1 !important;\n" +
-    "  grid-row: 1 !important;\n" +
-    "}\n" +
-    SPLIT_CONTAINER + " > app-solution-overall {\n" +
-    "  grid-column: 1 !important;\n" +
-    "  grid-row: 2 !important;\n" +
-    "}\n" +
-    SPLIT_CONTAINER + " > app-result-common {\n" +
-    "  grid-column: 2 !important;\n" +
-    "  grid-row: 1 / span 2 !important;\n" +
-    "  margin-top: 0 !important;\n" +
-    "}\n" +
-    "}";
+
+  /* 开关、左栏占比、多宽才分栏都来自设置页面（settings.rs 的 split，page-settings.js 推过来），
+   * 改了立即重写这条样式。关掉时样式为空，页面退回站点原来的上下排。 */
+  function splitCss(split) {
+    if (!split || !split.enabled) return "";
+    var left = split.leftPercent;
+    return (
+      "@media (min-width: " + split.minWidth + "px) {\n" +
+      SPLIT_CONTAINER + " {\n" +
+      "  display: grid !important;\n" +
+      "  grid-template-columns: minmax(0, " + left + "fr) minmax(0, " + (100 - left) + "fr) !important;\n" +
+      "  grid-template-rows: auto 1fr !important;\n" +
+      "  column-gap: 24px !important;\n" +
+      "  align-items: start !important;\n" +
+      "}\n" +
+      SPLIT_CONTAINER + " > app-question-choice {\n" +
+      "  grid-column: 1 !important;\n" +
+      "  grid-row: 1 !important;\n" +
+      "}\n" +
+      SPLIT_CONTAINER + " > app-solution-overall {\n" +
+      "  grid-column: 1 !important;\n" +
+      "  grid-row: 2 !important;\n" +
+      "}\n" +
+      SPLIT_CONTAINER + " > app-result-common {\n" +
+      "  grid-column: 2 !important;\n" +
+      "  grid-row: 1 / span 2 !important;\n" +
+      "  margin-top: 0 !important;\n" +
+      "}\n" +
+      "}"
+    );
+  }
 
   /* D 类：压掉一部分高度。
    * 页脚外框原本 321px（实测），整块留白太厚，压到一半。
@@ -267,12 +274,12 @@
     }
     // 压高度 + 去底色（页脚自身是深色底，不去掉的话留白是黑的）
     css += SHRINK_HEIGHT_CSS + "\n";
-    css += SPLIT_SOLUTION_CSS + "\n";
     return css;
   }
 
   var CLEAN_CSS = UI_TWEAKS ? buildCleanCss() : "";
 
+  var pageSettings = window.__fenbiSettings || null;
   var keys = window.__fenbiKeys;
   var isMacPlatform = keys.isMac, shortcutAction = keys.action;
 
@@ -360,6 +367,21 @@
       style.setAttribute("data-fenbi-wrapper", "tweaks");
       style.textContent = CLEAN_CSS;
       (document.head || document.documentElement).appendChild(style);
+    } catch (e) {}
+    applySplit();
+  }
+
+  /* 分栏单独一条样式：设置一变只重写它。 */
+  var splitStyle = null;
+  function applySplit() {
+    if (!UI_TWEAKS || !pageSettings) return;
+    try {
+      if (!splitStyle) {
+        splitStyle = document.createElement("style");
+        splitStyle.setAttribute("data-fenbi-wrapper", "split");
+        (document.head || document.documentElement).appendChild(splitStyle);
+      }
+      splitStyle.textContent = splitCss(pageSettings.get().split);
     } catch (e) {}
   }
 
@@ -583,6 +605,7 @@
   };
 
   installShortcuts();
+  if (pageSettings) pageSettings.subscribe(applySplit);
 
   /* 启动：文档就绪后重读一次当前决策，不读缓存、不等固定时长。
    * 生效与否完全由 Rust 的 (seq, kind) 决定——未知（pending）就什么都不做。

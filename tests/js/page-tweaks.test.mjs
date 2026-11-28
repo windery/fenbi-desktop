@@ -1,7 +1,7 @@
 /* 页面裁剪、诊断信息和网站 DOM 边界：检查真实 init.js 注入内容。 */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boot, CATALOG_URL } from "../support/boot.mjs";
+import { boot, CATALOG_URL, DEFAULT_SETTINGS } from "../support/boot.mjs";
 
 /* ── UI 裁剪：与刷题无关的入口 ──────────────────────────────── */
 
@@ -80,7 +80,8 @@ function styleRules(css) {
 }
 
 test("带 :has() 的规则里，每个选择器都带 :has()，不拖累其他裁剪", async () => {
-  const css = tweakCss(await boot({}));
+  const env = await boot({});
+  const css = tweakCss(env) + splitCss(env);
 
   /* 不认 :has() 的旧 WebView 会把含它的**整条规则**作废。所以 :has() 不能和别的
      选择器写进同一条规则：一条规则里要么每个选择器都带 :has()，要么都不带。
@@ -104,17 +105,28 @@ test("带 :has() 的规则里，每个选择器都带 :has()，不拖累其他�
 const SPLIT_CONTAINER =
   ".solution-choice-container:has(> app-question-choice):has(> app-solution-overall):has(> app-result-common)";
 
-test("解析页左右分栏：只在 1400px 以上生效，三块都在才分栏", async () => {
-  const css = tweakCss(await boot({}));
+/** 分栏单独一条样式（设置一变只重写它）。 */
+function splitCss(env) {
+  const style = env.document.head.children.find((el) => el.getAttribute("data-fenbi-wrapper") === "split");
+  assert.ok(style, "必须注入分栏样式");
+  return style.textContent;
+}
+
+function withSplit(changes) {
+  return { ...DEFAULT_SETTINGS, split: { ...DEFAULT_SETTINGS.split, ...changes } };
+}
+
+test("解析页左右分栏（默认设置）：窗口 1400px 以上、三块都在才分栏，两栏各占一半", async () => {
+  const css = splitCss(await boot({}));
   const split = styleRules(css).filter((rule) => rule.selectors.includes(SPLIT_CONTAINER));
 
-  assert.ok(split.length, `裁剪 CSS 里必须有 ${SPLIT_CONTAINER}`);
+  assert.ok(split.length, `分栏样式里必须有 ${SPLIT_CONTAINER}`);
   for (const rule of split) {
     assert.match(rule.media ?? "", /^@media \(min-width: 1400px\)$/, `${rule.selectors} 必须包在 1400px 断点里`);
   }
   const container = ruleFor(css, `${SPLIT_CONTAINER} {`);
   assert.match(container, /display:\s*grid/);
-  assert.match(container, /grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\)/, "两栏等宽，且都能缩到 0 宽，不把卡片撑出去");
+  assert.match(container, /grid-template-columns:\s*minmax\(0, 50fr\) minmax\(0, 50fr\)/, "两栏等宽，且都能缩到 0 宽，不把卡片撑出去");
 
   const place = (child) => ruleFor(css, `${SPLIT_CONTAINER} > ${child} {`);
   assert.match(place("app-question-choice"), /grid-column:\s*1/, "题目选项在左栏");
@@ -123,8 +135,36 @@ test("解析页左右分栏：只在 1400px 以上生效，三块都在才分栏
   assert.match(place("app-result-common"), /grid-row:\s*1 \/ span 2/, "右栏从题目顶部一直排到统计条下面");
 });
 
+test("解析页左右分栏：启动时带的左栏占比、触发宽度生效", async () => {
+  const css = splitCss(await boot({ settings: withSplit({ leftPercent: 35, minWidth: 1200 }) }));
+  assert.match(css, /^@media \(min-width: 1200px\)/);
+  assert.match(ruleFor(css, `${SPLIT_CONTAINER} {`), /grid-template-columns:\s*minmax\(0, 35fr\) minmax\(0, 65fr\)/);
+});
+
+test("解析页左右分栏：设置页面改了比例、宽度、开关，同一条样式立即重写", async () => {
+  const env = await boot({});
+  env.applySettings(withSplit({ leftPercent: 60, minWidth: 1600 }));
+  let css = splitCss(env);
+  assert.match(css, /^@media \(min-width: 1600px\)/);
+  assert.match(ruleFor(css, `${SPLIT_CONTAINER} {`), /minmax\(0, 60fr\) minmax\(0, 40fr\)/);
+
+  env.applySettings(withSplit({ enabled: false }));
+  assert.equal(splitCss(env), "", "关掉就退回站点原来的上下排");
+  env.applySettings(DEFAULT_SETTINGS);
+  assert.match(splitCss(env), /minmax\(0, 50fr\)/);
+  const styles = env.document.head.children.filter((el) => el.getAttribute("data-fenbi-wrapper") === "split");
+  assert.equal(styles.length, 1, "改设置不能越加越多条样式");
+});
+
+test("分栏关着启动：没有分栏规则，其他裁剪照旧", async () => {
+  const env = await boot({ settings: withSplit({ enabled: false }) });
+  assert.equal(splitCss(env), "");
+  assert.ok(!tweakCss(env).includes(SPLIT_CONTAINER));
+  assert.match(tweakCss(env), /\.member-area/);
+});
+
 test("解析页左右分栏不用 Angular 作用域哈希做选择器", async () => {
-  const css = tweakCss(await boot({}));
+  const css = splitCss(await boot({}));
   for (const rule of styleRules(css)) {
     assert.doesNotMatch(rule.selectors, /ng-tns-|_ngcontent-|ng-star-inserted/, `${rule.selectors} 带了站点构建时会变的哈希`);
   }

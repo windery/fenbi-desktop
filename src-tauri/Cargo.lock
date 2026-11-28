@@ -987,6 +987,7 @@ dependencies = [
  "gtk",
  "open",
  "semver",
+ "serde",
  "serde_json",
  "tauri",
  "tauri-build",
