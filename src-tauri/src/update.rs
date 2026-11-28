@@ -114,13 +114,19 @@ fn version_from_location(location: &str) -> Option<Version> {
 
 /// 检查更新走哪个代理：环境变量里的优先；没有就用系统设置里的代理；都没有就直连。
 ///
-/// - Windows：ureq 开了 `win-system-proxy`，`try_from_env` 读完环境变量会接着读系统设置里的代理。
-/// - macOS：读系统设置里的 HTTPS 代理（见 `proxy_from_scutil`）。从访达或程序坞打开的应用
-///   拿不到终端里设的环境变量，所以 Mac 上实际靠的是这一步。
-/// - Linux：只认环境变量。
+/// - 环境变量（`HTTPS_PROXY` 等）里的代理只配环境变量 `NO_PROXY` 里的排除项。
+/// - 系统设置里的代理：Windows 读注册表，macOS 读 `scutil --proxy`，都只用 HTTPS 那一项；
+///   系统设置里的排除项和环境变量 `NO_PROXY` 里的都照样直连。从访达或程序坞打开的
+///   Mac 应用拿不到终端里设的环境变量，所以 Mac 上实际靠的是系统设置这一步。
+/// - Linux 只认环境变量。
 /// - 读不出来或格式不认识，当作没有代理，检查照常直连。PAC 自动配置和 SOCKS 代理不管。
 fn update_proxy() -> Option<ureq::Proxy> {
-    pick_proxy(ureq::Proxy::try_from_env(), system_proxy)
+    pick_proxy(ureq::Proxy::try_from_env(), || {
+        let no_proxy = std::env::var("NO_PROXY")
+            .or_else(|_| std::env::var("no_proxy"))
+            .ok();
+        build_system_proxy(system_proxy()?, no_proxy.as_deref())
+    })
 }
 
 /// 有环境变量里的代理就用它，不再读系统设置（macOS 上读一次要起一个子进程）。
@@ -131,8 +137,48 @@ fn pick_proxy(
     from_env.or_else(system)
 }
 
+/// 系统设置里给 HTTPS 请求用的代理。
+#[derive(Debug, PartialEq)]
+struct SystemProxy {
+    /// `主机:端口`，或带上连代理用的协议：`https://主机:端口`。
+    address: String,
+    /// 系统设置里不走代理的主机。
+    exceptions: Vec<String>,
+}
+
+/// 用系统设置里的代理建 ureq 的代理。只认 http / https 代理，要有主机和非零端口，
+/// 否则当作没有代理。`no_proxy` 是环境变量 `NO_PROXY` 的值，和系统设置里的排除项一起生效。
+fn build_system_proxy(found: SystemProxy, no_proxy: Option<&str>) -> Option<ureq::Proxy> {
+    let address = if found.address.contains("://") {
+        found.address
+    } else {
+        format!("http://{}", found.address)
+    };
+    let parsed = ureq::Proxy::new(&address).ok()?;
+    let protocol = parsed.protocol();
+    if !matches!(
+        protocol,
+        ureq::ProxyProtocol::Http | ureq::ProxyProtocol::Https
+    ) || parsed.host().is_empty()
+    {
+        return None;
+    }
+    let port = parsed.uri().port_u16().filter(|port| *port != 0)?;
+    let mut proxy = ureq::Proxy::builder(protocol)
+        .host(parsed.host())
+        .port(port);
+    let from_env = no_proxy.unwrap_or_default().split(',');
+    for exception in found.exceptions.iter().map(String::as_str).chain(from_env) {
+        let exception = exception.trim();
+        if !exception.is_empty() {
+            proxy = proxy.no_proxy(exception);
+        }
+    }
+    proxy.build().ok()
+}
+
 #[cfg(target_os = "macos")]
-fn system_proxy() -> Option<ureq::Proxy> {
+fn system_proxy() -> Option<SystemProxy> {
     let output = std::process::Command::new("/usr/sbin/scutil")
         .arg("--proxy")
         .output()
@@ -143,9 +189,27 @@ fn system_proxy() -> Option<ureq::Proxy> {
     proxy_from_scutil(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// Windows 的系统代理由 ureq 在 `try_from_env` 里读；Linux 不读系统代理。
-#[cfg(not(target_os = "macos"))]
-fn system_proxy() -> Option<ureq::Proxy> {
+#[cfg(windows)]
+fn system_proxy() -> Option<SystemProxy> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+    let settings = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            KEY_READ,
+        )
+        .ok()?;
+    let enabled = settings
+        .get_value::<u32, _>("ProxyEnable")
+        .is_ok_and(|enable| enable == 1);
+    let server: String = settings.get_value("ProxyServer").unwrap_or_default();
+    let overrides: String = settings.get_value("ProxyOverride").unwrap_or_default();
+    proxy_from_windows(enabled, &server, &overrides)
+}
+
+/// Linux 不读系统设置里的代理。
+#[cfg(not(any(target_os = "macos", windows)))]
+fn system_proxy() -> Option<SystemProxy> {
     None
 }
 
@@ -153,9 +217,9 @@ fn system_proxy() -> Option<ureq::Proxy> {
 ///
 /// 检查更新只发 HTTPS 请求，系统对 HTTPS 请求也只用这一项，所以只开了 HTTP 代理时不用它。
 /// 只看最外层的键：`__SCOPED__` 里是各网卡自己的设置，最外层才是正在生效的那份。
-/// 系统设置里「忽略这些主机的代理设置」（`ExceptionsList`）里的主机照样直连。
+/// `ExceptionsList` 是系统设置里「忽略这些主机的代理设置」。
 #[cfg(any(target_os = "macos", test))]
-fn proxy_from_scutil(output: &str) -> Option<ureq::Proxy> {
+fn proxy_from_scutil(output: &str) -> Option<SystemProxy> {
     let mut depth = 0usize;
     let mut in_exceptions = false;
     let (mut enabled, mut host, mut port) = (false, None, None);
@@ -170,9 +234,9 @@ fn proxy_from_scutil(output: &str) -> Option<ureq::Proxy> {
             match (depth, key) {
                 (1, "HTTPSEnable") => enabled = value == "1",
                 (1, "HTTPSProxy") => host = Some(value),
-                (1, "HTTPSPort") => port = value.parse::<u16>().ok(),
+                (1, "HTTPSPort") => port = Some(value),
                 (1, "ExceptionsList") => in_exceptions = true,
-                (2, _) if in_exceptions => exceptions.push(value),
+                (2, _) if in_exceptions => exceptions.push(value.to_string()),
                 _ => {}
             }
         }
@@ -180,15 +244,53 @@ fn proxy_from_scutil(output: &str) -> Option<ureq::Proxy> {
             depth += 1;
         }
     }
-    let host = host.filter(|host| enabled && !host.is_empty())?;
-    let mut proxy = ureq::Proxy::builder(ureq::ProxyProtocol::Http).host(host);
-    if let Some(port) = port {
-        proxy = proxy.port(port);
+    if !enabled {
+        return None;
     }
-    for exception in exceptions {
-        proxy = proxy.no_proxy(exception);
+    let host = host.filter(|host| !host.is_empty())?;
+    let port = port?.parse::<u16>().ok().filter(|port| *port != 0)?;
+    Some(SystemProxy {
+        address: format!("{host}:{port}"),
+        exceptions,
+    })
+}
+
+/// 从 Windows 注册表的三项读 HTTPS 代理：`ProxyEnable`、`ProxyServer`、`ProxyOverride`。
+///
+/// `ProxyServer` 有两种写法：所有协议共用一个（`主机:端口`），或按协议分开
+/// （`http=主机:端口;https=主机:端口;socks=…`），后者只用 `https=` 那一项，没有就直连。
+/// 每一项都可以带上连代理用的协议（`https://主机:端口`）。`ProxyOverride` 用分号分隔，
+/// `<local>` 指不带点的内网主机名，GitHub 用不上，跳过。系统代理关着时排除项也不用。
+#[cfg(any(windows, test))]
+fn proxy_from_windows(enabled: bool, server: &str, overrides: &str) -> Option<SystemProxy> {
+    if !enabled {
+        return None;
     }
-    proxy.build().ok()
+    let server = server.trim();
+    let address = if server.contains('=') {
+        server.split(';').find_map(|entry| {
+            let (protocol, address) = entry.split_once('=')?;
+            protocol
+                .trim()
+                .eq_ignore_ascii_case("https")
+                .then(|| address.trim())
+        })?
+    } else {
+        server
+    };
+    if address.is_empty() {
+        return None;
+    }
+    let exceptions = overrides
+        .split(';')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty() && *entry != "<local>")
+        .map(str::to_string)
+        .collect();
+    Some(SystemProxy {
+        address: address.to_string(),
+        exceptions,
+    })
 }
 
 /// `proxy` 为空就直连。不交给 ureq 默认的「读环境变量」，走不走代理只由调用方决定。
@@ -578,25 +680,22 @@ mod tests {
         text.parse().unwrap()
     }
 
-    #[test]
-    fn the_macos_https_proxy_is_read_from_system_settings() {
-        let proxy = proxy_from_scutil(SCUTIL_ON).expect("开着 HTTPS 代理");
-        assert_eq!(proxy.protocol(), ureq::ProxyProtocol::Http);
-        assert_eq!(proxy.host(), "127.0.0.1");
-        assert_eq!(proxy.port(), 7890);
-        assert!(!proxy.is_no_proxy(&uri(RELEASES_URL)), "GitHub 走代理");
+    fn found(address: &str, exceptions: &[&str]) -> SystemProxy {
+        SystemProxy {
+            address: address.to_string(),
+            exceptions: exceptions.iter().map(|e| e.to_string()).collect(),
+        }
     }
 
     #[test]
-    fn hosts_excluded_in_system_settings_skip_the_macos_proxy() {
-        let proxy = proxy_from_scutil(SCUTIL_ON).unwrap();
-        for target in [
-            "http://127.0.0.1:8850/releases/latest",
-            "http://localhost/",
-            "http://printer.local/",
-        ] {
-            assert!(proxy.is_no_proxy(&uri(target)), "{target}");
-        }
+    fn the_macos_https_proxy_is_read_from_system_settings() {
+        assert_eq!(
+            proxy_from_scutil(SCUTIL_ON),
+            Some(found(
+                "127.0.0.1:7890",
+                &["127.0.0.1", "192.168.0.0/16", "localhost", "*.local"]
+            ))
+        );
     }
 
     #[test]
@@ -610,6 +709,10 @@ mod tests {
             "<dictionary> {\n  HTTPEnable : 1\n  HTTPPort : 7890\n  HTTPProxy : 127.0.0.1\n  HTTPSEnable : 0\n}\n",
             // 开着但没填地址
             "<dictionary> {\n  HTTPSEnable : 1\n  HTTPSPort : 7890\n}\n",
+            // 端口缺失、写错、为 0
+            "<dictionary> {\n  HTTPSEnable : 1\n  HTTPSProxy : 127.0.0.1\n}\n",
+            "<dictionary> {\n  HTTPSEnable : 1\n  HTTPSPort : abc\n  HTTPSProxy : 127.0.0.1\n}\n",
+            "<dictionary> {\n  HTTPSEnable : 1\n  HTTPSPort : 0\n  HTTPSProxy : 127.0.0.1\n}\n",
             // 只有某块网卡自己的设置：最外层才是生效的那份
             "<dictionary> {\n  HTTPSEnable : 0\n  __SCOPED__ : <dictionary> {\n    en0 : <dictionary> {\n      HTTPSEnable : 1\n      HTTPSPort : 7890\n      HTTPSProxy : 127.0.0.1\n    }\n  }\n}\n",
             // 读出来的不是这个格式
@@ -617,8 +720,104 @@ mod tests {
             "scutil: command not found",
         ];
         for output in cases {
-            assert!(proxy_from_scutil(output).is_none(), "{output}");
+            assert_eq!(proxy_from_scutil(output), None, "{output}");
         }
+    }
+
+    #[test]
+    fn the_windows_https_proxy_is_read_from_system_settings() {
+        for (server, overrides, expected) in [
+            // 所有协议共用一个代理（Clash、v2rayN 写的就是这种）
+            (
+                "127.0.0.1:7890",
+                "localhost;127.*;<local>",
+                Some(found("127.0.0.1:7890", &["localhost", "127.*"])),
+            ),
+            // 按协议分开：HTTPS 请求只用 https= 那一项
+            (
+                "http=127.0.0.1:8080;https=127.0.0.1:8081;socks=127.0.0.1:1080",
+                "",
+                Some(found("127.0.0.1:8081", &[])),
+            ),
+            (
+                "HTTPS=127.0.0.1:8081",
+                "",
+                Some(found("127.0.0.1:8081", &[])),
+            ),
+            // 写明了连代理用的协议
+            (
+                "https://proxy.example:8443",
+                "",
+                Some(found("https://proxy.example:8443", &[])),
+            ),
+            (
+                "http=127.0.0.1:8080;https=https://sproxy.example:443",
+                "",
+                Some(found("https://sproxy.example:443", &[])),
+            ),
+            // 按协议分开但没有 https= 那一项：HTTPS 请求直连
+            ("http=127.0.0.1:8080", "", None),
+            ("socks=127.0.0.1:1080", "", None),
+            ("", "", None),
+        ] {
+            assert_eq!(
+                proxy_from_windows(true, server, overrides),
+                expected,
+                "{server}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_windows_proxy_when_it_is_switched_off() {
+        assert_eq!(
+            proxy_from_windows(false, "127.0.0.1:7890", "github.com"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_system_proxy_needs_an_http_or_https_proxy_with_a_real_port() {
+        for address in [
+            "127.0.0.1",
+            "127.0.0.1:0",
+            "127.0.0.1:abc",
+            ":7890",
+            "socks5://127.0.0.1:1080",
+            "ftp://127.0.0.1:21",
+        ] {
+            assert!(
+                build_system_proxy(found(address, &[]), None).is_none(),
+                "{address}"
+            );
+        }
+
+        let proxy = build_system_proxy(found("127.0.0.1:7890", &[]), None).unwrap();
+        assert_eq!(proxy.protocol(), ureq::ProxyProtocol::Http);
+        assert_eq!((proxy.host(), proxy.port()), ("127.0.0.1", 7890));
+
+        let proxy = build_system_proxy(found("https://proxy.example:8443", &[]), None).unwrap();
+        assert_eq!(proxy.protocol(), ureq::ProxyProtocol::Https);
+        assert_eq!((proxy.host(), proxy.port()), ("proxy.example", 8443));
+    }
+
+    #[test]
+    fn hosts_excluded_in_system_settings_or_no_proxy_skip_the_system_proxy() {
+        let proxy = build_system_proxy(
+            found("127.0.0.1:7890", &["localhost", "*.local", "127.*"]),
+            Some(" example.org , .internal.test"),
+        )
+        .unwrap();
+        for target in [
+            "http://localhost/",
+            "http://printer.local/",
+            "http://127.0.0.1:8850/",
+            "https://example.org/",
+            "https://api.internal.test/",
+        ] {
+            assert!(proxy.is_no_proxy(&uri(target)), "{target}");
+        }
+        assert!(!proxy.is_no_proxy(&uri(RELEASES_URL)), "GitHub 走代理");
     }
 
     #[test]
@@ -637,6 +836,22 @@ mod tests {
         assert!(pick_proxy(None, || None).is_none(), "都没有就直连");
     }
 
+    /// ureq 的 `win-system-proxy` 会在读环境变量代理时混进 Windows 系统设置里的排除项
+    /// （系统代理关着也会），还读不懂按协议分开的代理写法。系统代理由本文件自己读。
+    #[test]
+    fn ureq_does_not_read_windows_system_settings_itself() {
+        let manifest = include_str!("../Cargo.toml");
+        let ureq = manifest
+            .lines()
+            .find(|line| line.starts_with("ureq ="))
+            .expect("Cargo.toml 里有 ureq");
+        assert!(
+            !ureq.contains("win-system-proxy"),
+            "不要给 ureq 开 win-system-proxy：它把系统排除项套到环境变量代理上，\
+             也读不懂 `http=…;https=…`。Windows 系统代理在 update.rs 的 system_proxy 里读。"
+        );
+    }
+
     /// 读到一个请求头结束（空行）为止。请求可能分几次写过来。
     fn read_head(stream: &mut std::net::TcpStream) -> String {
         let mut head = Vec::new();
@@ -648,10 +863,10 @@ mod tests {
     }
 
     /// 本机假代理：收下 CONNECT 请求、答应建隧道，再在隧道里回 `response`。
-    /// 返回代理地址，和一个能取到它收到的 CONNECT 请求行的接收端。
-    fn fake_connect_proxy(response: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
+    /// 返回监听端口，和一个能取到它收到的 CONNECT 请求行的接收端；没人连它就什么都收不到。
+    fn fake_connect_proxy(response: &'static str) -> (u16, std::sync::mpsc::Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = format!("http://{}", listener.local_addr().unwrap());
+        let port = listener.local_addr().unwrap().port();
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -661,21 +876,86 @@ mod tests {
             read_head(&mut stream);
             let _ = stream.write_all(response.as_bytes());
         });
-        (address, receiver)
+        (port, receiver)
     }
+
+    const REDIRECT_TO_9_9_9: &str = "HTTP/1.1 302 Found\r\nLocation: /windery/fenbi-desktop/releases/tag/v9.9.9\r\nContent-Length: 0\r\n\r\n";
 
     #[test]
     fn a_check_goes_through_the_proxy_it_is_given() {
-        let (proxy, connects) = fake_connect_proxy(
-            "HTTP/1.1 302 Found\r\nLocation: /windery/fenbi-desktop/releases/tag/v9.9.9\r\nContent-Length: 0\r\n\r\n",
-        );
+        let (port, connects) = fake_connect_proxy(REDIRECT_TO_9_9_9);
         let found = fetch_latest(
             "http://releases.invalid/windery/fenbi-desktop/releases/latest",
             "fenbi-desktop/test",
-            Some(ureq::Proxy::new(&proxy).unwrap()),
+            Some(ureq::Proxy::new(&format!("http://127.0.0.1:{port}")).unwrap()),
             Duration::from_secs(2),
         );
         assert_eq!(found, Ok(v("9.9.9")));
+        assert_eq!(
+            connects.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "CONNECT releases.invalid:80 HTTP/1.1"
+        );
+    }
+
+    #[test]
+    fn a_per_protocol_windows_proxy_carries_the_check_on_its_https_entry_only() {
+        let (http_port, http_connects) = fake_connect_proxy(REDIRECT_TO_9_9_9);
+        let (https_port, https_connects) = fake_connect_proxy(REDIRECT_TO_9_9_9);
+        let settings =
+            format!("http=127.0.0.1:{http_port};https=127.0.0.1:{https_port};socks=127.0.0.1:1");
+        let proxy = proxy_from_windows(true, &settings, "<local>")
+            .and_then(|found| build_system_proxy(found, None));
+        let found = fetch_latest(
+            "http://releases.invalid/windery/fenbi-desktop/releases/latest",
+            "fenbi-desktop/test",
+            proxy,
+            Duration::from_secs(2),
+        );
+        assert_eq!(found, Ok(v("9.9.9")));
+        assert_eq!(
+            https_connects.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "CONNECT releases.invalid:80 HTTP/1.1"
+        );
+        assert!(
+            http_connects
+                .recv_timeout(Duration::from_millis(200))
+                .is_err(),
+            "http= 那一项的代理收不到请求"
+        );
+    }
+
+    #[test]
+    fn a_host_in_no_proxy_bypasses_the_system_proxy_and_others_go_through_it() {
+        // 命中 NO_PROXY：直连假发布页，代理什么都收不到
+        let (port, connects) = fake_connect_proxy(REDIRECT_TO_9_9_9);
+        let url = fake_release_page(Some(REDIRECT_TO_9_9_9));
+        let proxy = proxy_from_scutil(&SCUTIL_ON.replace("7890", &port.to_string()))
+            .map(|mut found| {
+                found.exceptions.clear();
+                found
+            })
+            .and_then(|found| build_system_proxy(found, Some("127.0.0.1")));
+        assert_eq!(
+            fetch_latest(&url, "fenbi-desktop/test", proxy, Duration::from_secs(2)),
+            Ok(v("9.9.9"))
+        );
+        assert!(
+            connects.recv_timeout(Duration::from_millis(200)).is_err(),
+            "命中 NO_PROXY 时代理收不到请求"
+        );
+
+        // 没命中：照常走系统代理
+        let (port, connects) = fake_connect_proxy(REDIRECT_TO_9_9_9);
+        let proxy = build_system_proxy(found(&format!("127.0.0.1:{port}"), &[]), Some("127.0.0.1"));
+        assert_eq!(
+            fetch_latest(
+                "http://releases.invalid/windery/fenbi-desktop/releases/latest",
+                "fenbi-desktop/test",
+                proxy,
+                Duration::from_secs(2),
+            ),
+            Ok(v("9.9.9"))
+        );
         assert_eq!(
             connects.recv_timeout(Duration::from_secs(1)).unwrap(),
             "CONNECT releases.invalid:80 HTTP/1.1"

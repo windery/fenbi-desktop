@@ -993,6 +993,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-window-state",
  "ureq",
+ "winreg 0.56.0",
 ]
 
 [[package]]
@@ -4178,7 +4179,6 @@ dependencies = [
  "ureq-proto",
  "utf8-zero",
  "webpki-roots",
- "winreg 0.56.0",
 ]
 
 [[package]]
