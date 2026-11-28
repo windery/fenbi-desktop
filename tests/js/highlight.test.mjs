@@ -113,16 +113,39 @@ test("焦点停在选项的单选框上（选完答案）：照样能标", async
   assert.equal(event.defaultPrevented, true);
 });
 
-test("不是做题页：选中文字按 H 不标、不拦", async () => {
+test("不是做题页：选中文字按 H 不标、不加样式、不拦", async () => {
   for (const url of [
     "https://www.fenbi.com/spa/tiku/guide/catalog",
     "https://spa.fenbi.com/ti/exam/solution/1_3e_2k963k2",
+    // 只认 spa.fenbi.com：别的粉笔子域上同样的路径不算
+    "https://www.fenbi.com/ti/exam/exercise/1_3e_2k95rs8",
+    "https://fenbi.com/ti/memorize/1_3e_2k96k2k",
+    // 路径必须正好是一个 id
+    "https://spa.fenbi.com/ti/exam/exercise/",
+    "https://spa.fenbi.com/ti/memorize/",
+    "https://spa.fenbi.com/ti/exam/exercise/1_3e_2k95rs8/report",
+    "https://spa.fenbi.com/ti/memorize/1_3e_2k96k2k/extra/",
   ]) {
     const { env, t1 } = await practicePage({ url });
     env.select(t1, 0, 5, at(10, 10));
     const event = press(env, H);
     assert.deepEqual(counts(env), [0, 0, 0], url);
+    assert.equal(markStyle(env), null, url);
     assert.equal(event.defaultPrevented, false, url);
+    assert.equal(env.selection.rangeCount, 1, `${url}：选区原样留着`);
+  }
+});
+
+test("做题页地址允许结尾的 / 和查询串", async () => {
+  for (const url of [
+    "https://spa.fenbi.com/ti/exam/exercise/1_3e_2k95rs8/",
+    "https://spa.fenbi.com/ti/exam/exercise/1_3e_2k95rs8/?routecs=syzc",
+    "https://spa.fenbi.com/ti/memorize/1_3e_2k96k2k?x=1",
+  ]) {
+    const { env, t1 } = await practicePage({ url });
+    env.select(t1, 0, 5, at(10, 10));
+    press(env, H);
+    assert.deepEqual(counts(env), [1, 0, 0], url);
   }
 });
 
@@ -146,6 +169,83 @@ test("带 Cmd / Ctrl / Alt 的 H 不处理（Cmd+H 是系统的隐藏窗口）",
   for (const mod of ["metaKey", "ctrlKey", "altKey"]) {
     assert.equal(press(env, { ...H, [mod]: true }).defaultPrevented, false, mod);
   }
+  assert.deepEqual(counts(env), [0, 0, 0]);
+});
+
+test("从一道题拖选到另一道题按 H：不标、不拦、选区原样留着", async () => {
+  const { env, t1, t2 } = await practicePage();
+  env.selectAcross(t1, 2, t2, 5, [...at(10, 10), ...at(10, 100)]);
+
+  const event = press(env, H);
+
+  assert.deepEqual(counts(env), [0, 0, 0]);
+  assert.equal(event.defaultPrevented, false);
+  assert.equal(env.selection.rangeCount, 1);
+});
+
+test("跨题选区被拒后两题分开标：清哪道题只清那道题自己的", async () => {
+  for (const [clear, left] of [
+    ["q1", "t2"],
+    ["q2", "t1"],
+  ]) {
+    const page = await practicePage();
+    const { env } = page;
+    env.selectAcross(page.t1, 2, page.t2, 5, [...at(10, 10), ...at(10, 100)]);
+    press(env, H);
+    env.select(page.t1, 0, 5, at(10, 10));
+    press(env, H);
+    env.select(page.t2, 0, 5, at(10, 100));
+    press(env, H);
+
+    env.hover(300, 40, page[clear]);
+    assert.equal(press(env, SHIFT_DELETE).defaultPrevented, true);
+
+    assert.deepEqual(counts(env), [1, 0, 0], `清 ${clear} 后只剩 ${left} 的那处`);
+    const [remaining] = env.highlights.get("fenbi-mark-1");
+    assert.equal(remaining.startContainer, page[left]);
+    assert.equal(remaining.endContainer, page[left]);
+  }
+});
+
+test("同一道题里跨几段文字拖选：照样能标", async () => {
+  const { env, q1, t1 } = await practicePage();
+  const later = env.textNode(env.element("p", "", q1));
+  env.selectAcross(t1, 2, later, 4, at(10, 10));
+  assert.equal(press(env, H).defaultPrevented, true);
+  assert.deepEqual(counts(env), [1, 0, 0]);
+});
+
+test("鼠标移出内容区（到工具栏或窗口外）后：删除键不删、不拦，悬停样式撤掉", async () => {
+  for (const leave of ["leave", "blur"]) {
+    for (const withQuestions of [true, false]) {
+      const env = await bootHighlight();
+      const block = withQuestions ? env.element("app-ti", "question-multiple") : env.element("div", "renamed-question");
+      const text = env.textNode(env.element("p", "", block));
+      env.select(text, 0, 5, at(10, 10));
+      press(env, H);
+      env.hover(20, 15, block);
+      assert.equal(env.markCount("fenbi-mark-hover"), 1);
+
+      env[leave]();
+
+      const label = `${leave}${withQuestions ? "" : "（页面上没有题目容器）"}`;
+      assert.equal(env.markCount("fenbi-mark-hover"), 0, `${label}：悬停样式要撤掉`);
+      for (const key of [DELETE, BACKSPACE, SHIFT_DELETE, SHIFT_BACKSPACE, H]) {
+        assert.equal(press(env, key).defaultPrevented, false, `${label} 后 ${key.shiftKey ? "Shift+" : ""}${key.code}`);
+      }
+      assert.deepEqual(counts(env), [1, 0, 0], label);
+    }
+  }
+});
+
+test("鼠标在内容区里移动时离开某个元素（relatedTarget 不为空）：悬停照旧", async () => {
+  const { env, q1, t1 } = await practicePage();
+  env.select(t1, 0, 5, at(10, 10));
+  press(env, H);
+  env.hover(20, 15, q1);
+  env.window.dispatch("mouseout", { relatedTarget: q1 });
+  assert.equal(env.markCount("fenbi-mark-hover"), 1);
+  assert.equal(press(env, DELETE).defaultPrevented, true);
   assert.deepEqual(counts(env), [0, 0, 0]);
 });
 
@@ -210,6 +310,7 @@ test("站点改版、页面上找不到题目容器：Shift+Delete 清掉本页�
   press(env, H);
   env.select(text, 6, 9, at(80, 10));
   press(env, H);
+  env.hover(300, 40, block);
 
   const event = press(env, SHIFT_DELETE);
 
@@ -228,6 +329,33 @@ test("站点换页（SPA 改地址）：旧页面的标记全部清掉", async (
   assert.deepEqual(counts(env), [0, 0, 0]);
 });
 
+test("站点换页后不按任何热键：鼠标一动或页面一滚就清掉，再返回也看不到旧标记", async () => {
+  for (const nudge of ["hover", "scroll"]) {
+    const { env, t1 } = await practicePage();
+    env.select(t1, 0, 5, at(10, 10));
+    press(env, H);
+
+    env.history.pushState(null, "", "/ti/exam/solution/1_3e_2k963k2");
+    if (nudge === "hover") env.hover(500, 500);
+    else env.scroll();
+    assert.deepEqual(counts(env), [0, 0, 0], `换页后 ${nudge} 就要清掉`);
+
+    env.history.back();
+    assert.deepEqual(counts(env), [0, 0, 0], `${nudge} 后返回`);
+  }
+});
+
+test("用浏览器后退离开做题页（popstate）：鼠标键盘都不动也清掉", async () => {
+  const { env, t1 } = await practicePage();
+  env.history.pushState(null, "", "/ti/exam/exercise/1_3e_another");
+  env.select(t1, 0, 5, at(10, 10));
+  press(env, H);
+
+  env.history.back();
+
+  assert.deepEqual(counts(env), [0, 0, 0]);
+});
+
 test("站点把题目节点换掉：失效的范围在下一次按键时清掉，不越攒越多", async () => {
   const { env, q1, t1, t2 } = await practicePage();
   env.select(t1, 0, 5, at(10, 10));
@@ -235,10 +363,31 @@ test("站点把题目节点换掉：失效的范围在下一次按键时清掉�
   env.select(t2, 0, 5, at(10, 100));
   press(env, H);
 
-  env.document.body.removeChild(q1);
+  env.remove(q1);
   press(env, DELETE);
 
   assert.deepEqual(counts(env), [1, 0, 0]);
+});
+
+test("站点只换掉跨段标记的一端：活 Range 边界被挪到父节点也认得出失效，鼠标一动就清", async () => {
+  /* Chromium 摘节点时把落在里面的边界移到 (父节点, 原位置)，范围不塌、两端也都还在文档里，
+     只看「塌没塌、在不在文档里」认不出来，会留下一块盖错地方的底色。 */
+  const { env, q1, t1 } = await practicePage();
+  const second = env.element("p", "", q1);
+  const later = env.textNode(second);
+  env.selectAcross(t1, 2, later, 4, at(10, 10));
+  press(env, H);
+
+  const fresh = env.document.createElement("p");
+  env.textNode(fresh);
+  env.replace(second, fresh);
+  const [stale] = env.highlights.get("fenbi-mark-1");
+  assert.equal(stale.endContainer, q1, "前提：替身按 Chromium 把边界挪到了父节点");
+  assert.equal(stale.collapsed, false);
+
+  env.hover(500, 500);
+
+  assert.deepEqual(counts(env), [0, 0, 0]);
 });
 
 test("浏览器不支持 CSS.highlights：功能整个不出现，不拦键、不加样式、不报错", async () => {
@@ -270,6 +419,7 @@ test("不联网、不写存储、不读选中的文字", async () => {
   assert.equal(env.localStorage.size, 0);
   assert.equal(env.sessionStorage.size, 0);
   assert.deepEqual(env.logs, []);
+  assert.deepEqual(env.invocations, [], "划词脚本不许调用 Tauri IPC");
 });
 
 test("highlight.js 的每个挂接点都在：注入、热加载拷贝、语法检查", () => {

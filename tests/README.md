@@ -7,7 +7,7 @@
 | `js/login-prompt.test.mjs` | 网站侧注入脚本的登录提示时序；包括异步决策、重试取消和练习页 |
 | `js/toolbar.test.mjs` | 独立本地工具栏的按钮、提示、收起状态与 IPC 请求 |
 | `js/navigation-shortcuts.test.mjs` | 网站侧快捷键、目录导航历史和不自动拉回目录页 |
-| `js/highlight.test.mjs` | 做题页划词标记：高亮登记表里的处数与颜色、哪些情况不拦键、换页与节点失效后的清理、不联网不写存储、各挂接点都在 |
+| `js/highlight.test.mjs` | 做题页划词标记：高亮登记表里的处数与颜色、哪些情况不拦键（含非做题页地址反例、跨题选区、鼠标离开内容区）、换页与节点失效后不按热键也清理、不联网不写存储不调 IPC、各挂接点都在 |
 | `js/page-tweaks.test.mjs` | 注入 CSS 的裁剪规则、解析页左右分栏的断点与守卫、诊断信息和不向网站 DOM 注入工具栏 |
 | `src-tauri/src/*` 中的 `#[cfg(test)]` | 与实现相邻的 Rust 状态机、URL/权限策略、布局计算和导航脚本生成 |
 

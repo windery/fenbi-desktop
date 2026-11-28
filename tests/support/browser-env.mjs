@@ -233,11 +233,14 @@ class TextNode {
   }
 }
 
-/* Range 的最小替身：边界 + 测试摆好的屏幕位置。不存文字——划词脚本也不该读文字。 */
+/* Range 的最小替身：边界 + 测试摆好的屏幕位置。不存文字——划词脚本也不该读文字。
+ * 和真的 Range 一样是「活的」：登记在 live 里，env.remove / env.replace 摘换节点时按 DOM 规范移动边界。 */
 class FakeRange {
-  constructor(startContainer, startOffset, endContainer, endOffset, rects = []) {
+  constructor(startContainer, startOffset, endContainer, endOffset, rects = [], live = null) {
     Object.assign(this, { startContainer, startOffset, endContainer, endOffset });
     this.rects = rects;
+    this.live = live;
+    if (live) live.add(this);
   }
 
   get collapsed() {
@@ -245,17 +248,11 @@ class FakeRange {
   }
 
   cloneRange() {
-    return new FakeRange(this.startContainer, this.startOffset, this.endContainer, this.endOffset, this.rects);
+    return new FakeRange(this.startContainer, this.startOffset, this.endContainer, this.endOffset, this.rects, this.live);
   }
 
   getClientRects() {
     return this.rects;
-  }
-
-  /** 站点把节点摘掉时，真的 Range 会塌成一个点。 */
-  collapse() {
-    this.endContainer = this.startContainer;
-    this.endOffset = this.startOffset;
   }
 
   toString() {
@@ -412,6 +409,7 @@ export function createEnv(options = {}) {
   const sessionStore = new Map();
   let pointTarget = null;
   const selection = new FakeSelection();
+  const liveRanges = new Set();
 
   const document = {
     readyState: options.domReady === false ? "loading" : "complete",
@@ -504,11 +502,13 @@ export function createEnv(options = {}) {
       if (cursor === 0) return;
       cursor--;
       setLocation(stack[cursor]);
+      window.dispatch("popstate", {});
     },
     forward() {
       if (cursor === stack.length - 1) return;
       cursor++;
       setLocation(stack[cursor]);
+      window.dispatch("popstate", {});
     },
   };
 
@@ -775,15 +775,74 @@ export function createEnv(options = {}) {
 
     /** 用户选中了 node 上 [start, end) 这一段，屏幕上占 rects 这些矩形。 */
     select(node, start, end, rects = []) {
+      return env.selectAcross(node, start, node, end, rects);
+    },
+
+    /** 用户从 startNode 的 startOffset 拖选到 endNode 的 endOffset（可以跨节点、跨题）。 */
+    selectAcross(startNode, startOffset, endNode, endOffset, rects = []) {
       selection.removeAllRanges();
-      selection.addRange(new FakeRange(node, start, node, end, rects));
+      selection.addRange(new FakeRange(startNode, startOffset, endNode, endOffset, rects, liveRanges));
       return selection.getRangeAt(0);
+    },
+
+    /**
+     * 站点把 node 摘掉。按 DOM 规范（Chromium 实测同样）更新所有活 Range：
+     * 边界落在被摘子树里的，移到 (父节点, 原位置)；同一父节点里位置靠后的边界前移一位。
+     */
+    remove(node) {
+      const parent = node.parentNode;
+      const index = parent.children.indexOf(node);
+      parent.removeChild(node);
+      const inside = (at) => {
+        for (; at; at = at.parentNode) if (at === node) return true;
+        return false;
+      };
+      for (const range of liveRanges) {
+        for (const end of ["start", "end"]) {
+          if (inside(range[`${end}Container`])) {
+            range[`${end}Container`] = parent;
+            range[`${end}Offset`] = index;
+          } else if (range[`${end}Container`] === parent && range[`${end}Offset`] > index) {
+            range[`${end}Offset`]--;
+          }
+        }
+      }
+    },
+
+    /** 站点用 replacement 换掉 oldNode（Angular 重新渲染一块）：先摘再插回原位置，活 Range 照规范更新。 */
+    replace(oldNode, replacement) {
+      const parent = oldNode.parentNode;
+      const index = parent.children.indexOf(oldNode);
+      env.remove(oldNode);
+      parent.insertBefore(replacement, parent.children[index] ?? null);
+      for (const range of liveRanges) {
+        for (const end of ["start", "end"]) {
+          if (range[`${end}Container`] === parent && range[`${end}Offset`] > index) range[`${end}Offset`]++;
+        }
+      }
+      return replacement;
     },
 
     /** 鼠标移到 (x, y)，下面是 target 元素。 */
     hover(x, y, target = null) {
       pointTarget = target;
       window.dispatch("mousemove", { clientX: x, clientY: y });
+    },
+
+    /** 鼠标离开这个 WebView（移到工具栏 WebView 或窗口外）：浏览器发 relatedTarget 为空的 mouseout。 */
+    leave() {
+      pointTarget = null;
+      window.dispatch("mouseout", { relatedTarget: null });
+    },
+
+    /** 窗口失焦（切到别的应用、点了工具栏）。 */
+    blur() {
+      window.dispatch("blur", {});
+    },
+
+    /** 页面滚动（鼠标不动）。 */
+    scroll() {
+      window.dispatch("scroll", {});
     },
 
     /** 让 element 拿到焦点。 */
