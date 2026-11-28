@@ -165,11 +165,13 @@
     return range.collapsed ? null : { selection: selection, range: range };
   }
 
-  /* 一处标记只能属于一道题，否则「清当前题」会误删或删不掉。页面上认不出题目容器
+  /* 一处标记只能属于一道题，否则「清当前题」会误删或删不掉：起点要落在某道题里，
+   * 终点在同一道题里。全选这类两端都在题外的选区也不算。页面上认不出题目容器
    * （站点改版）时不做这道检查。 */
   function withinOneQuestion(range) {
     if (!document.querySelector(QUESTION_SELECTOR)) return true;
-    return closestQuestion(range.startContainer) === closestQuestion(range.endContainer);
+    var question = closestQuestion(range.startContainer);
+    return !!question && question === closestQuestion(range.endContainer);
   }
 
   function nextColor(mark) {

@@ -183,6 +183,27 @@ test("从一道题拖选到另一道题按 H：不标、不拦、选区原样留
   assert.equal(env.selection.rangeCount, 1);
 });
 
+test("全选或两端都在题外的选区按 H：不标、不拦、选区原样留着", async () => {
+  // 例如 Cmd+A 全选：起止点落在题目容器外面，中间跨了好几道题
+  for (const [from, to] of [
+    ["outside", "outside2"],
+    ["outside", "t1"],
+    ["t1", "outside"],
+  ]) {
+    const page = await practicePage();
+    const { env } = page;
+    page.outside = env.textNode(env.element("p", ""));
+    page.outside2 = env.textNode(env.element("p", ""));
+    env.selectAcross(page[from], 0, page[to], 3, [...at(10, 10), ...at(10, 100)]);
+
+    const event = press(env, H);
+
+    assert.deepEqual(counts(env), [0, 0, 0], `${from} → ${to}`);
+    assert.equal(event.defaultPrevented, false, `${from} → ${to}`);
+    assert.equal(env.selection.rangeCount, 1, `${from} → ${to}`);
+  }
+});
+
 test("跨题选区被拒后两题分开标：清哪道题只清那道题自己的", async () => {
   for (const [clear, left] of [
     ["q1", "t2"],
