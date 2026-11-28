@@ -112,7 +112,92 @@ fn version_from_location(location: &str) -> Option<Version> {
     Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()
 }
 
-fn fetch_latest(url: &str, user_agent: &str, timeout: Duration) -> Result<Version, String> {
+/// 检查更新走哪个代理：环境变量里的优先；没有就用系统设置里的代理；都没有就直连。
+///
+/// - Windows：ureq 开了 `win-system-proxy`，`try_from_env` 读完环境变量会接着读系统设置里的代理。
+/// - macOS：读系统设置里的 HTTPS 代理（见 `proxy_from_scutil`）。从访达或程序坞打开的应用
+///   拿不到终端里设的环境变量，所以 Mac 上实际靠的是这一步。
+/// - Linux：只认环境变量。
+/// - 读不出来或格式不认识，当作没有代理，检查照常直连。PAC 自动配置和 SOCKS 代理不管。
+fn update_proxy() -> Option<ureq::Proxy> {
+    pick_proxy(ureq::Proxy::try_from_env(), system_proxy)
+}
+
+/// 有环境变量里的代理就用它，不再读系统设置（macOS 上读一次要起一个子进程）。
+fn pick_proxy(
+    from_env: Option<ureq::Proxy>,
+    system: impl FnOnce() -> Option<ureq::Proxy>,
+) -> Option<ureq::Proxy> {
+    from_env.or_else(system)
+}
+
+#[cfg(target_os = "macos")]
+fn system_proxy() -> Option<ureq::Proxy> {
+    let output = std::process::Command::new("/usr/sbin/scutil")
+        .arg("--proxy")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    proxy_from_scutil(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Windows 的系统代理由 ureq 在 `try_from_env` 里读；Linux 不读系统代理。
+#[cfg(not(target_os = "macos"))]
+fn system_proxy() -> Option<ureq::Proxy> {
+    None
+}
+
+/// 从 `scutil --proxy` 的输出里读 HTTPS 代理（系统设置里的「安全网页代理」）。
+///
+/// 检查更新只发 HTTPS 请求，系统对 HTTPS 请求也只用这一项，所以只开了 HTTP 代理时不用它。
+/// 只看最外层的键：`__SCOPED__` 里是各网卡自己的设置，最外层才是正在生效的那份。
+/// 系统设置里「忽略这些主机的代理设置」（`ExceptionsList`）里的主机照样直连。
+#[cfg(any(target_os = "macos", test))]
+fn proxy_from_scutil(output: &str) -> Option<ureq::Proxy> {
+    let mut depth = 0usize;
+    let mut in_exceptions = false;
+    let (mut enabled, mut host, mut port) = (false, None, None);
+    let mut exceptions = Vec::new();
+    for line in output.lines().map(str::trim) {
+        if line == "}" {
+            depth = depth.saturating_sub(1);
+            in_exceptions = false;
+            continue;
+        }
+        if let Some((key, value)) = line.split_once(" : ") {
+            match (depth, key) {
+                (1, "HTTPSEnable") => enabled = value == "1",
+                (1, "HTTPSProxy") => host = Some(value),
+                (1, "HTTPSPort") => port = value.parse::<u16>().ok(),
+                (1, "ExceptionsList") => in_exceptions = true,
+                (2, _) if in_exceptions => exceptions.push(value),
+                _ => {}
+            }
+        }
+        if line.ends_with('{') {
+            depth += 1;
+        }
+    }
+    let host = host.filter(|host| enabled && !host.is_empty())?;
+    let mut proxy = ureq::Proxy::builder(ureq::ProxyProtocol::Http).host(host);
+    if let Some(port) = port {
+        proxy = proxy.port(port);
+    }
+    for exception in exceptions {
+        proxy = proxy.no_proxy(exception);
+    }
+    proxy.build().ok()
+}
+
+/// `proxy` 为空就直连。不交给 ureq 默认的「读环境变量」，走不走代理只由调用方决定。
+fn fetch_latest(
+    url: &str,
+    user_agent: &str,
+    proxy: Option<ureq::Proxy>,
+    timeout: Duration,
+) -> Result<Version, String> {
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
             .max_redirects(0)
@@ -120,6 +205,7 @@ fn fetch_latest(url: &str, user_agent: &str, timeout: Duration) -> Result<Versio
             .http_status_as_error(false)
             .timeout_global(Some(timeout))
             .user_agent(user_agent)
+            .proxy(proxy)
             .build(),
     );
     let response = agent.get(url).call().map_err(|e| e.to_string())?;
@@ -148,9 +234,10 @@ fn check_now(
     state: &UpdateState,
     current: &Version,
     url: &str,
+    proxy: Option<ureq::Proxy>,
     timeout: Duration,
 ) -> Result<Option<String>, String> {
-    let latest = fetch_latest(url, &format!("fenbi-desktop/{current}"), timeout)?;
+    let latest = fetch_latest(url, &format!("fenbi-desktop/{current}"), proxy, timeout)?;
     let version = latest.to_string();
     Ok(state.record(current, latest).then_some(version))
 }
@@ -183,6 +270,7 @@ pub async fn check_update(
             &handle.state::<UpdateState>(),
             &current,
             &check_url(),
+            update_proxy(),
             TIMEOUT,
         )
     })
@@ -210,7 +298,7 @@ pub fn spawn_startup_check(app: &tauri::AppHandle) {
     std::thread::spawn(move || {
         let current = app.package_info().version.clone();
         let user_agent = format!("fenbi-desktop/{current}");
-        match fetch_latest(&check_url(), &user_agent, TIMEOUT) {
+        match fetch_latest(&check_url(), &user_agent, update_proxy(), TIMEOUT) {
             Ok(latest) => {
                 let updates = app.state::<UpdateState>();
                 let found = updates.record(&current, latest);
@@ -383,7 +471,7 @@ mod tests {
             "HTTP/1.1 302 Found\r\nLocation: https://github.com/windery/fenbi-desktop/releases/tag/v9.9.9\r\nContent-Length: 0\r\n\r\n",
         ));
         assert_eq!(
-            fetch_latest(&url, "fenbi-desktop/test", Duration::from_secs(2)),
+            fetch_latest(&url, "fenbi-desktop/test", None, Duration::from_secs(2)),
             Ok(v("9.9.9"))
         );
     }
@@ -399,13 +487,20 @@ mod tests {
             &state,
             &v("0.1.3"),
             &fake_release_page(Some(NEWER)),
+            None,
             timeout,
         );
         assert_eq!(found, Ok(Some("0.1.4".to_string())));
         assert_eq!(state.newer_version(), Some("0.1.4".to_string()));
 
         let state = UpdateState::default();
-        let found = check_now(&state, &v("0.1.3"), &fake_release_page(Some(SAME)), timeout);
+        let found = check_now(
+            &state,
+            &v("0.1.3"),
+            &fake_release_page(Some(SAME)),
+            None,
+            timeout,
+        );
         assert_eq!(found, Ok(None));
         assert_eq!(state.newer_version(), None);
     }
@@ -437,21 +532,153 @@ mod tests {
         let state = UpdateState::default();
         state.record(&v("0.1.3"), v("0.1.4"));
         let url = fake_release_page(Some("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"));
-        assert!(check_now(&state, &v("0.1.3"), &url, Duration::from_secs(2)).is_err());
+        assert!(check_now(&state, &v("0.1.3"), &url, None, Duration::from_secs(2)).is_err());
         assert_eq!(state.newer_version(), Some("0.1.4".to_string()));
     }
 
     #[test]
     fn a_page_that_does_not_redirect_is_a_failed_check() {
         let url = fake_release_page(Some("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"));
-        assert!(fetch_latest(&url, "fenbi-desktop/test", Duration::from_secs(2)).is_err());
+        assert!(fetch_latest(&url, "fenbi-desktop/test", None, Duration::from_secs(2)).is_err());
     }
 
     #[test]
     fn a_silent_server_fails_the_check_at_the_timeout() {
         let url = fake_release_page(None);
         let started = std::time::Instant::now();
-        assert!(fetch_latest(&url, "fenbi-desktop/test", Duration::from_millis(300)).is_err());
+        assert!(
+            fetch_latest(&url, "fenbi-desktop/test", None, Duration::from_millis(300)).is_err()
+        );
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    /// `scutil --proxy` 在系统设置里开着 HTTPS 代理（Clash 这类软件设的样子）时的输出。
+    const SCUTIL_ON: &str = "<dictionary> {
+  ExceptionsList : <array> {
+    0 : 127.0.0.1
+    1 : 192.168.0.0/16
+    2 : localhost
+    3 : *.local
+  }
+  FTPPassive : 1
+  HTTPEnable : 1
+  HTTPPort : 7890
+  HTTPProxy : 127.0.0.1
+  HTTPSEnable : 1
+  HTTPSPort : 7890
+  HTTPSProxy : 127.0.0.1
+  ProxyAutoConfigEnable : 0
+  SOCKSEnable : 1
+  SOCKSPort : 7891
+  SOCKSProxy : 127.0.0.1
+}
+";
+
+    fn uri(text: &str) -> ureq::http::Uri {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn the_macos_https_proxy_is_read_from_system_settings() {
+        let proxy = proxy_from_scutil(SCUTIL_ON).expect("开着 HTTPS 代理");
+        assert_eq!(proxy.protocol(), ureq::ProxyProtocol::Http);
+        assert_eq!(proxy.host(), "127.0.0.1");
+        assert_eq!(proxy.port(), 7890);
+        assert!(!proxy.is_no_proxy(&uri(RELEASES_URL)), "GitHub 走代理");
+    }
+
+    #[test]
+    fn hosts_excluded_in_system_settings_skip_the_macos_proxy() {
+        let proxy = proxy_from_scutil(SCUTIL_ON).unwrap();
+        for target in [
+            "http://127.0.0.1:8850/releases/latest",
+            "http://localhost/",
+            "http://printer.local/",
+        ] {
+            assert!(proxy.is_no_proxy(&uri(target)), "{target}");
+        }
+    }
+
+    #[test]
+    fn no_macos_proxy_when_https_proxy_is_off_or_incomplete() {
+        let cases = [
+            // 这台开发机上的真实输出：代理全关着
+            "<dictionary> {\n  FTPPassive : 1\n  HTTPEnable : 0\n  HTTPSEnable : 0\n  ProxyAutoConfigEnable : 0\n  SOCKSEnable : 0\n}\n",
+            // 关掉后系统仍留着上次填的地址和端口
+            "<dictionary> {\n  HTTPSEnable : 0\n  HTTPSPort : 7890\n  HTTPSProxy : 127.0.0.1\n}\n",
+            // 只开了 HTTP 代理：系统对 HTTPS 请求不用它
+            "<dictionary> {\n  HTTPEnable : 1\n  HTTPPort : 7890\n  HTTPProxy : 127.0.0.1\n  HTTPSEnable : 0\n}\n",
+            // 开着但没填地址
+            "<dictionary> {\n  HTTPSEnable : 1\n  HTTPSPort : 7890\n}\n",
+            // 只有某块网卡自己的设置：最外层才是生效的那份
+            "<dictionary> {\n  HTTPSEnable : 0\n  __SCOPED__ : <dictionary> {\n    en0 : <dictionary> {\n      HTTPSEnable : 1\n      HTTPSPort : 7890\n      HTTPSProxy : 127.0.0.1\n    }\n  }\n}\n",
+            // 读出来的不是这个格式
+            "",
+            "scutil: command not found",
+        ];
+        for output in cases {
+            assert!(proxy_from_scutil(output).is_none(), "{output}");
+        }
+    }
+
+    #[test]
+    fn a_proxy_from_the_environment_wins_and_system_settings_are_not_read() {
+        let from_env = ureq::Proxy::new("http://10.0.0.1:1080").unwrap();
+        let picked = pick_proxy(Some(from_env), || {
+            panic!("有环境变量里的代理时不读系统设置")
+        })
+        .unwrap();
+        assert_eq!(picked.host(), "10.0.0.1");
+
+        let from_system = ureq::Proxy::new("http://127.0.0.1:7890").unwrap();
+        let picked = pick_proxy(None, || Some(from_system)).unwrap();
+        assert_eq!(picked.host(), "127.0.0.1");
+
+        assert!(pick_proxy(None, || None).is_none(), "都没有就直连");
+    }
+
+    /// 读到一个请求头结束（空行）为止。请求可能分几次写过来。
+    fn read_head(stream: &mut std::net::TcpStream) -> String {
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).is_ok_and(|n| n == 1) {
+            head.push(byte[0]);
+        }
+        String::from_utf8_lossy(&head).into_owned()
+    }
+
+    /// 本机假代理：收下 CONNECT 请求、答应建隧道，再在隧道里回 `response`。
+    /// 返回代理地址，和一个能取到它收到的 CONNECT 请求行的接收端。
+    fn fake_connect_proxy(response: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let connect = read_head(&mut stream);
+            let _ = sender.send(connect.lines().next().unwrap_or_default().to_string());
+            let _ = stream.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n");
+            read_head(&mut stream);
+            let _ = stream.write_all(response.as_bytes());
+        });
+        (address, receiver)
+    }
+
+    #[test]
+    fn a_check_goes_through_the_proxy_it_is_given() {
+        let (proxy, connects) = fake_connect_proxy(
+            "HTTP/1.1 302 Found\r\nLocation: /windery/fenbi-desktop/releases/tag/v9.9.9\r\nContent-Length: 0\r\n\r\n",
+        );
+        let found = fetch_latest(
+            "http://releases.invalid/windery/fenbi-desktop/releases/latest",
+            "fenbi-desktop/test",
+            Some(ureq::Proxy::new(&proxy).unwrap()),
+            Duration::from_secs(2),
+        );
+        assert_eq!(found, Ok(v("9.9.9")));
+        assert_eq!(
+            connects.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "CONNECT releases.invalid:80 HTTP/1.1"
+        );
     }
 }
