@@ -55,19 +55,78 @@ test("解析页：显示着开通入口的视频块 / 申论会员内容块整�
   }
 });
 
-test("解析页的 :has() 规则单独成条，不拖累其他裁剪", async () => {
+/** 拆出每条样式规则的选择器列表；@media 包着的规则也拆出来，记下它在哪个 @media 里。 */
+function styleRules(css) {
+  const rules = [];
+  let media = null;
+  let depth = 0;
+  let head = "";
+  for (const ch of css) {
+    if (ch === "{") {
+      const prelude = head.trim();
+      head = "";
+      if (prelude.startsWith("@media")) media = prelude;
+      else rules.push({ selectors: prelude, media: depth > 0 ? media : null });
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0) media = null;
+      head = "";
+    } else {
+      head += ch;
+    }
+  }
+  return rules;
+}
+
+test("带 :has() 的规则里，每个选择器都带 :has()，不拖累其他裁剪", async () => {
   const css = tweakCss(await boot({}));
 
-  /* 不认 :has() 的旧 WebView 会把含它的**整条规则**作废。
-     所以除了这一条，任何规则的选择器列表里都不能出现 :has()。 */
-  const rules = css.split("}").map((rule) => rule.split("{")[0]);
-  const withHas = rules.filter((selectors) => selectors.includes(":has("));
-  assert.equal(withHas.length, 1, "带 :has() 的规则只能有一条");
+  /* 不认 :has() 的旧 WebView 会把含它的**整条规则**作废。所以 :has() 不能和别的
+     选择器写进同一条规则：一条规则里要么每个选择器都带 :has()，要么都不带。
+     加新的 :has() 规则就单独写一条（见 CONTRIBUTING.md「UI 裁剪」末尾的警告）。 */
+  const withHas = styleRules(css).filter((rule) => rule.selectors.includes(":has("));
+  assert.ok(withHas.length >= 1);
+  for (const rule of withHas) {
+    for (const selector of rule.selectors.split(/,(?![^(]*\))/)) {
+      assert.match(selector, /:has\(/, `「${selector.trim()}」和 :has() 选择器写在了同一条规则里，拆成单独一条`);
+    }
+  }
   for (const selector of [".member-area", "nav.fb-web-nav", "a.fenbi-icon-url"]) {
     assert.ok(
-      !withHas[0].includes(selector),
+      withHas.every((rule) => !rule.selectors.includes(selector)),
       `${selector} 不能和 :has() 写在同一条规则里`
     );
+  }
+});
+
+/* 解析页左右分栏：窗口够宽、题目容器里三块都在才分栏；任何一块对不上，规则不命中，退回上下排。 */
+const SPLIT_CONTAINER =
+  ".solution-choice-container:has(> app-question-choice):has(> app-solution-overall):has(> app-result-common)";
+
+test("解析页左右分栏：只在 1400px 以上生效，三块都在才分栏", async () => {
+  const css = tweakCss(await boot({}));
+  const split = styleRules(css).filter((rule) => rule.selectors.includes(SPLIT_CONTAINER));
+
+  assert.ok(split.length, `裁剪 CSS 里必须有 ${SPLIT_CONTAINER}`);
+  for (const rule of split) {
+    assert.match(rule.media ?? "", /^@media \(min-width: 1400px\)$/, `${rule.selectors} 必须包在 1400px 断点里`);
+  }
+  const container = ruleFor(css, `${SPLIT_CONTAINER} {`);
+  assert.match(container, /display:\s*grid/);
+  assert.match(container, /grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\)/, "两栏等宽，且都能缩到 0 宽，不把卡片撑出去");
+
+  const place = (child) => ruleFor(css, `${SPLIT_CONTAINER} > ${child} {`);
+  assert.match(place("app-question-choice"), /grid-column:\s*1/, "题目选项在左栏");
+  assert.match(place("app-solution-overall"), /grid-column:\s*1/, "答案统计条在左栏");
+  assert.match(place("app-result-common"), /grid-column:\s*2/, "解析视频、文字解析、考点、来源、笔记在右栏");
+  assert.match(place("app-result-common"), /grid-row:\s*1 \/ span 2/, "右栏从题目顶部一直排到统计条下面");
+});
+
+test("解析页左右分栏不用 Angular 作用域哈希做选择器", async () => {
+  const css = tweakCss(await boot({}));
+  for (const rule of styleRules(css)) {
+    assert.doesNotMatch(rule.selectors, /ng-tns-|_ngcontent-|ng-star-inserted/, `${rule.selectors} 带了站点构建时会变的哈希`);
   }
 });
 

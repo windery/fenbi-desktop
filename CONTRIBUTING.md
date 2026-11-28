@@ -411,7 +411,7 @@ Rust 负责布局和受限命令；网站仍由 `init.js` 注入快捷键与裁�
 `init.js` 顶部有一组选择器常量（`UI_TWEAKS` 默认 `true` 总开关）。只注入 CSS，
 不碰站点逻辑。站点改版时选择器失效的表现只是"该隐藏的没隐藏"，不影响做题。
 
-六组选择器，**按隐藏方式分类**，不能混：
+七组规则，**按手法分类**，不能混：
 
 | 常量 | 手法 | 用于 | 当前内容 |
 | --- | --- | --- | --- |
@@ -421,6 +421,7 @@ Rust 负责布局和受限命令；网站仍由 `init.js` 注入快捷键与裁�
 | `NON_INTERACTIVE_SELECTORS` | **保留可见**、只去掉点击 | 留着占位但不能再导航的入口 | `a.fenbi-icon-url`（logo） |
 | `SHRINK_HEIGHT_CSS` | 改高度 | 压掉页脚过厚的留白 | `fb-web-footer` 高度 50% |
 | `UPSELL_BLOCK_SELECTORS` | `display: none`，**单独成一条规则** | 站点正在显示开通入口的整块内容 | 解析页的视频块；申论会员内容块 |
+| `SPLIT_SOLUTION_CSS` | 改布局：`@media (min-width: 1400px)` 里的 grid，**带 `:has()` 守卫、单独成条** | 解析页左右分栏 | 题目选项 + 答案统计条在左，解析视频 / 解析 / 考点 / 来源 / 笔记在右 |
 
 把 `COLLAPSE_SELECTORS` 和 `HIDE_CONTENT_SELECTORS` 用反，就是踩过的坑：
 前者必须让出宽度，后者一旦归零留白就没了。
@@ -448,7 +449,22 @@ Rust 负责布局和受限命令；网站仍由 `init.js` 注入快捷键与裁�
 
 > ⚠️ 这条规则必须**单独成条**，不能并进 `HIDE_SELECTORS`。不认 `:has()` 的旧 WebView
 > （macOS 12.3 之前的系统 WebView）会把含它的整条规则作废，并进去就连累全部裁剪。
-> 旧系统上的表现只是这两块照旧显示。`tests/js/page-tweaks.test.mjs` 盯着这一点。
+> 旧系统上的表现只是这两块照旧显示。`tests/js/page-tweaks.test.mjs` 盯着这一点：
+> 带 `:has()` 的规则里，每个选择器都必须带 `:has()`。
+
+**解析页左右分栏**（GitHub #10）：窗口宽度够 1400 像素时，每道题的 `.solution-choice-container`
+改成两栏等宽的 grid：左栏 `app-question-choice`（题目选项）接 `app-solution-overall`（答案统计条），
+右栏 `app-result-common` 从题目顶端排到统计条下面，里面「解析视频 → 解析 → 考点 → 来源 → 笔记」保持站点原来的顺序。
+窄于 1400 保持上下排。
+
+- **三块都在才分栏**：容器选择器是 `.solution-choice-container:has(> app-question-choice):has(> app-solution-overall):has(> app-result-common)`，
+  任何一块改名或挪走（站点改版），规则就不命中，页面退回原来的上下排。不用 Angular 作用域哈希。
+- **两栏都是 `minmax(0, 1fr)`**：站点给所有图片设了 `max-width: 100%`，解析视频也会跟着栏宽缩放
+  （1400 宽时 540×315 缩成 496×289），所以两栏都能缩，不会把卡片撑出去。
+- 右栏的 `margin-top`（原本是和统计条之间的 20px）去掉，和题目顶端对齐。只改布局，不碰站点节点。
+- **和开通入口那条规则一起生效不打架**：没开会员时视频块被藏掉，右栏从「解析」开始。
+- 答对的题默认被站点折叠成一条「解析」（右上角箭头展开），这时右栏就是这一条，展开后照常排。
+- 不认 `:has()` 的旧 WebView 上只是不分栏。
 
 **刻意保留可见但不可点**：`a.fenbi-icon-url`（logo）。整块拿掉会让顶栏左端空一截，
 而它原本跳 fenbi.com 首页，属于"离开刷题"的入口。做法是
@@ -694,6 +710,21 @@ Windows / Linux 上的等价行为**未验证**。
   所以会员账号下选择器不命中。**这一条来自脚本模板，没有用会员账号实测**
 - `.member-btn` 点了是站点自己开的会员弹窗，不是导航
 - 这一页的 WebView 支持 `:has()`（`CSS.supports("selector(li:has(a))")` 为真）
+
+**解析页的版面（2026-11-28 用 ego-browser 实测，macOS、Chromium 内核、已登录、当前考试未开会员；从目录页「练习历史」里一份已完成的练习进入）**：
+
+| 元素 / 事实 | 实测 | 说明 |
+| --- | --- | --- |
+| `app-ti > .ti-container > .ti-content > app-solution-choice > .solution-choice-container` | 15 道题都是这一层 | 子元素依次是 `app-question-choice`、`app-solution-overall`、`app-result-common`，没有别的 |
+| 内容宽度（`.solution-choice-container`） | 视口 1280 / 1400 / 1600 / 1920 时 1140 / 1100 / 1300 / 1620 | 页面两侧留白：1280 时各 50 左右，1400 起各 130 左右 |
+| `app-result-common > .result-common-container` | `padding: 20px`、`1px` 边框、`margin-top: 20px`；右上有折叠按钮 `.toggle-btn` | 答对的题默认折叠成 60 高的一条「解析」，答错和没答的展开 |
+| `.solution-video-container.medium` | flex：视频 540×315 + 会员遮罩 270×315 | 栏宽不够时视频跟着缩（1400 宽分栏后 496×289） |
+| 全局样式 `img { max-width: 100%; height: auto; }` | 站点自带 | 解析和题干里的图片跟着栏宽缩 |
+
+- 临时注入 `init.js` 生成的整份裁剪 CSS，在 1280 / 1399 / 1400 / 1600 / 1920 五个宽度量 15 道题：
+  1400 起 15 道全部分栏，左右两栏不重叠，容器和页面都没有横向溢出；1399 及以下全部保持上下排。
+  模拟会员（不藏视频块、只藏会员遮罩）时右栏视频完整显示，不被裁。
+  复制一份容器、去掉统计条后，这份不分栏（退回上下排）
 
 **/tiku 下旧解析组件的会员相关结构（2026-11-27 读站点当日的脚本模板得到；真实页面未核对）**：
 
